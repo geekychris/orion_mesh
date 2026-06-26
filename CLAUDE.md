@@ -63,16 +63,18 @@ Decisions are durable — when adding code, conform to these rather than re-liti
 | `Store` (SQLite via sqlx, migrations, resource CRUD, node cache) | ✅ 7 tests (`orion-store`) |
 | `filter_nodes_by_placement` (arch/os/gpu/labels) | ✅ 4 tests (`orion-scheduler`) — scoring + capability index pending |
 | Dev Portal HTTP client + wiremock tests | ✅ 4 tests (`orion-devportal`) |
-| Agent: connect, publish inventory + heartbeats, subscribe to control plane, launch via `NativeAdapter` | ✅ end-to-end verified against `nats:2.10` |
-| Controller: subscribe heartbeats + inventory, persist to SQLite, serve `/v1/nodes` + `/v1/resources/{kind}` + `POST /v1/resources/apply` | ✅ end-to-end verified |
-| Scheduler dispatch loop (controller → `control.run`) | ❌ Phase 5 |
-| Reconciler (compare desired vs observed → produce control events) | ❌ Phase 5 |
+| Agent: connect, publish inventory + heartbeats, subscribe to control plane, launch via `NativeAdapter`, **capture stdout/stderr to `orion.logs.{node}`** | ✅ end-to-end verified against `nats:2.10` |
+| Controller: subscribe heartbeats + inventory + **logs**, persist to SQLite, serve `/v1/nodes` + `/v1/resources/{kind}` + `POST /v1/resources/apply` + **`POST /v1/dispatch/{kind}/{name}`** + **`GET /v1/logs/{kind}/{name}`** + **`GET /v1/schedules/observed`** | ✅ end-to-end verified |
+| **Direct dispatch** (controller → `control.run` via NATS, agent launches via adapter, output streams back) | ✅ Phase A live |
+| **Cron scheduler tick** (controller fires Schedule resources on their cron) | ✅ Phase B live |
+| **IPC demo** (`orion-demo-pub` ↔ `orion-demo-sub` over the mesh's own NATS broker) | ✅ Phase C live |
+| **UI Demo tab** with AttrMatch / capability / placement / bulk apply / IPC cards | ✅ |
+| Reconciler (compare desired vs observed → produce control events automatically) | ❌ Phase 5 |
+| Full scheduler (filter + score + place across multiple nodes — current heuristic is "first observed node") | ❌ Phase 5 |
 | Find API (`POST /v1/find` with capability selector) | ❌ Phase 4 |
 | Docker / Python / Java / Node / Spark / LLM / HA / Wasm runtime adapters | ❌ Phase 5+ |
-| Log / metric forwarders on the agent | ❌ Phase 2/3 |
 | Service health probe loop (publish to `orion.service.health`) | ❌ Phase 5 |
 | MCP server (`orion-mcp`) | 🟡 crate exists, only declares planned tool names |
-| UI views per resource kind | ❌ later phase |
 
 ## Local dev — how to actually run it
 

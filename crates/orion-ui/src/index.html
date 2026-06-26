@@ -982,11 +982,155 @@ spec:
       "stored resources.";
     wrap.append(intro);
 
+    wrap.append(demoCardIpc());
     wrap.append(demoCardAttrMatch());
     wrap.append(demoCardCapability());
     wrap.append(demoCardPlacement());
     wrap.append(demoCardBulkApply());
     return wrap;
+  }
+
+  // ---------------------------------------------------------- IPC demo card
+  const IPC_PUB_YAML = `apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: demo-pub
+  labels: { tier: demo, role: producer }
+spec:
+  runtime:
+    kind: native
+    exec: target/release/orion-demo-pub
+    args: ["--subject", "orion.demo.ipc", "--interval-seconds", "1", "--label", "P"]
+    env: { NATS_URL: "nats://127.0.0.1:4222" }
+  restart_policy: on_failure
+`;
+  const IPC_SUB_YAML = `apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: demo-sub
+  labels: { tier: demo, role: consumer }
+spec:
+  runtime:
+    kind: native
+    exec: target/release/orion-demo-sub
+    args: ["--subject", "orion.demo.ipc", "--label", "S"]
+    env: { NATS_URL: "nats://127.0.0.1:4222" }
+  restart_policy: on_failure
+`;
+
+  function demoCardIpc() {
+    const card = makeCard(
+      "IPC demo — two Services talking over NATS",
+      "Apply demo-pub + demo-sub Services (orion-demo-pub publishes \"tick N at HH:MM:SS\" every second on the orion.demo.ipc subject; orion-demo-sub subscribes and prints). The mesh's own NATS broker carries the messages.");
+
+    const status = el("div", { class: "small muted", style: "margin-bottom:.5rem" });
+    card.append(status);
+
+    const split = el("div", { class: "row", style: "margin-top:.5rem" });
+    const left = el("div");
+    left.append(el("label", {}, "Publisher (demo-pub) stdout"));
+    const pubBox = el("div", { class: "logs-tail", style: "max-height: 180px" });
+    pubBox.innerHTML = '<div class="logs-empty">no data yet</div>';
+    left.append(pubBox);
+    const right = el("div");
+    right.append(el("label", {}, "Subscriber (demo-sub) stdout"));
+    const subBox = el("div", { class: "logs-tail", style: "max-height: 180px" });
+    subBox.innerHTML = '<div class="logs-empty">no data yet</div>';
+    right.append(subBox);
+    split.append(left, right);
+    card.append(split);
+
+    let pollTimer = null;
+
+    const renderLogs = async (box, name) => {
+      try {
+        const r = await api(`/v1/logs/Service/${name}`);
+        if (!r.entries.length) {
+          box.innerHTML = '<div class="logs-empty">no logs yet</div>';
+          return;
+        }
+        box.innerHTML = "";
+        for (const e of r.entries.slice(-30)) {
+          const row = el("div", { class: "log-row" });
+          const ts = new Date(e.at).toLocaleTimeString(undefined, { hour12: false });
+          row.append(el("span", { class: "ts" }, ts));
+          row.append(el("span", { class: `stream${e.stream==='stderr'?' err':''}` }, e.stream));
+          row.append(el("span", {}, e.line));
+          box.append(row);
+        }
+        box.scrollTop = box.scrollHeight;
+      } catch (e) {
+        box.innerHTML = `<div class="logs-empty">error: ${e}</div>`;
+      }
+    };
+
+    const startPolling = () => {
+      if (pollTimer) clearInterval(pollTimer);
+      const poll = () => {
+        renderLogs(pubBox, "demo-pub");
+        renderLogs(subBox, "demo-sub");
+      };
+      poll();
+      pollTimer = setInterval(poll, 2000);
+      // Track in state.logTimers so it gets cleared on tab switch.
+      state.logTimers["demo-ipc"] = pollTimer;
+    };
+
+    const buttons = el("div", { style: "display:flex; gap:.5rem; margin-top:.75rem" });
+
+    const startBtn = el("button", { class: "action primary" }, "Apply + Dispatch both");
+    startBtn.onclick = async () => {
+      status.textContent = "applying demo-sub…";
+      try {
+        await api("/v1/resources/apply", { method: "POST", headers: { "content-type": "application/yaml" }, body: IPC_SUB_YAML });
+        status.textContent = "applying demo-pub…";
+        await api("/v1/resources/apply", { method: "POST", headers: { "content-type": "application/yaml" }, body: IPC_PUB_YAML });
+        status.textContent = "dispatching demo-sub…";
+        await api("/v1/dispatch/Service/demo-sub", { method: "POST" });
+        // Give the subscriber a moment to connect before the publisher starts firing.
+        await new Promise(r => setTimeout(r, 600));
+        status.textContent = "dispatching demo-pub…";
+        await api("/v1/dispatch/Service/demo-pub", { method: "POST" });
+        status.textContent = "running — watch both log streams below";
+        startPolling();
+        await refresh();
+      } catch (e) {
+        status.textContent = "✗ " + String(e);
+      }
+    };
+    buttons.append(startBtn);
+
+    const watchBtn = el("button", { class: "action" }, "Watch (don't re-dispatch)");
+    watchBtn.onclick = () => {
+      status.textContent = "watching existing instances";
+      startPolling();
+    };
+    buttons.append(watchBtn);
+
+    const stopBtn = el("button", { class: "action danger" }, "Stop + clear");
+    stopBtn.onclick = async () => {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = null;
+      status.textContent = "stopping…";
+      try {
+        // Best-effort: delete both Services. The agent doesn't yet expose a stop-by-name
+        // endpoint, but deleting the resource is what the reconciler would observe.
+        // The running processes stay alive until the agent ends (Phase A handler also
+        // accepts ControlStop by instance_id; not wired into the UI yet).
+        await api("/v1/resources/Service/demo-pub", { method: "DELETE" }).catch(() => {});
+        await api("/v1/resources/Service/demo-sub", { method: "DELETE" }).catch(() => {});
+        status.textContent = "Resources deleted. Restart the agent to halt the running processes.";
+        pubBox.innerHTML = '<div class="logs-empty">cleared</div>';
+        subBox.innerHTML = '<div class="logs-empty">cleared</div>';
+        await refresh();
+      } catch (e) {
+        status.textContent = "✗ " + String(e);
+      }
+    };
+    buttons.append(stopBtn);
+
+    card.append(buttons);
+    return card;
   }
 
   function makeCard(title, desc) {

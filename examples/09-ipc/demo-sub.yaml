@@ -1,0 +1,13 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: demo-sub
+  labels: { tier: demo, role: consumer }
+spec:
+  runtime:
+    kind: native
+    exec: target/release/orion-demo-sub
+    args: ["--subject", "orion.demo.ipc", "--label", "S"]
+    env:
+      NATS_URL: "nats://127.0.0.1:4222"
+  restart_policy: on_failure

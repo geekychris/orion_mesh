@@ -1574,6 +1574,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "orion-demo-bins"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "chrono",
+ "clap",
+ "futures",
+ "tokio",
+]
+
+[[package]]
 name = "orion-devportal"
 version = "0.1.0"
 dependencies = [

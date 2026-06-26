@@ -13,6 +13,7 @@ members = [
     "crates/orion-controller",
     "crates/orion-cli",
     "crates/orion-ui",
+    "crates/orion-demo-bins",
 ]
 
 [workspace.package]

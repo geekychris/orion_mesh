@@ -1,0 +1,25 @@
+[package]
+name = "orion-demo-bins"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Trivial NATS publisher/subscriber binaries used by the IPC demo"
+
+[[bin]]
+name = "orion-demo-pub"
+path = "src/bin/pub.rs"
+
+[[bin]]
+name = "orion-demo-sub"
+path = "src/bin/sub.rs"
+
+[dependencies]
+tokio.workspace = true
+async-nats.workspace = true
+futures.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
