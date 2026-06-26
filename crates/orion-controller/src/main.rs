@@ -483,15 +483,19 @@ async fn dispatch_resource(
         .map_err(ApiError::store)?
         .ok_or_else(|| ApiError::not_found(format!("{kind}/{name} not found")))?;
 
-    let runtime = match &resource.body {
-        ResourceBody::Service { spec, .. } => spec
-            .runtime
-            .clone()
-            .ok_or_else(|| ApiError::bad_request("Service has no runtime"))?,
-        ResourceBody::Task { spec, .. } => spec
-            .runtime
-            .clone()
-            .ok_or_else(|| ApiError::bad_request("Task has no runtime"))?,
+    let (runtime, replicas) = match &resource.body {
+        ResourceBody::Service { spec, .. } => (
+            spec.runtime
+                .clone()
+                .ok_or_else(|| ApiError::bad_request("Service has no runtime"))?,
+            spec.replicas.unwrap_or(1).max(1),
+        ),
+        ResourceBody::Task { spec, .. } => (
+            spec.runtime
+                .clone()
+                .ok_or_else(|| ApiError::bad_request("Task has no runtime"))?,
+            1, // Tasks are one-shot — replicas only meaningful for Services.
+        ),
         _ => unreachable!(),
     };
 
@@ -504,6 +508,7 @@ async fn dispatch_resource(
         resource.metadata.name.clone(),
         runtime,
         generation,
+        replicas,
     )
     .await?;
 
@@ -511,14 +516,16 @@ async fn dispatch_resource(
 }
 
 /// Shared dispatch path used by POST /v1/dispatch and by the scheduler tick.
-/// Picks a node (currently: most recent live), generates an instance_id,
-/// publishes a ControlRun envelope, returns (node, instance_id).
+/// Picks a node (currently: most recent live), generates the base instance_id,
+/// publishes a ControlRun envelope carrying `replicas`. The agent fans out
+/// into N copies (each with its own derived id).
 async fn dispatch_workload(
     state: &AppState,
     kind: WorkloadKind,
     name: ResourceName,
     runtime: Runtime,
     generation: u64,
+    replicas: u32,
 ) -> Result<(String, Uuid), ApiError> {
     let node = state.node_id.get().ok_or_else(|| {
         ApiError::bad_request("no live nodes — start an agent first")
@@ -532,6 +539,7 @@ async fn dispatch_workload(
             name,
             runtime,
             generation,
+            replicas,
         },
     );
     let payload = serde_json::to_vec(&envelope).expect("encode ControlRun");
@@ -634,7 +642,7 @@ async fn scheduler_tick_once(state: &AppState) -> Result<()> {
                 }
             };
 
-            match dispatch_workload(state, WorkloadKind::Task, workload_name, runtime, 1).await {
+            match dispatch_workload(state, WorkloadKind::Task, workload_name, runtime, 1, 1).await {
                 Ok((_node, id)) => {
                     state.schedules.observe(&name, |o| {
                         o.last_fired_at = Some(now);

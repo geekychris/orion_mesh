@@ -13,30 +13,37 @@ struct Args {
     subject: String,
     #[arg(long, default_value_t = 1.0)]
     interval_seconds: f32,
-    #[arg(long, default_value = "demo")]
-    label: String,
+    /// Logical label shown in stdout. Defaults to `r<ORION_REPLICA_INDEX>` if
+    /// the agent set that env, else "demo".
+    #[arg(long)]
+    label: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let label = args
+        .label
+        .clone()
+        .or_else(|| std::env::var("ORION_REPLICA_INDEX").ok().map(|i| format!("r{i}")))
+        .unwrap_or_else(|| "demo".into());
+
     println!(
-        "[demo-pub:{}] connecting to {} -> {}",
-        args.label, args.nats_url, args.subject
+        "[demo-pub:{label}] connecting to {} -> {}",
+        args.nats_url, args.subject
     );
     let nc = async_nats::connect(&args.nats_url).await?;
-    println!("[demo-pub:{}] connected", args.label);
+    println!("[demo-pub:{label}] connected");
     let mut i: u64 = 0;
     let interval = Duration::from_millis((args.interval_seconds * 1000.0) as u64);
     loop {
         i += 1;
         let line = format!(
             "tick {i} from {label} at {ts}",
-            label = args.label,
             ts = chrono::Utc::now().format("%H:%M:%S%.3f")
         );
         nc.publish(args.subject.clone(), line.clone().into()).await?;
-        println!("[demo-pub:{}] sent: {}", args.label, line);
+        println!("[demo-pub:{label}] sent: {line}");
         tokio::time::sleep(interval).await;
     }
 }

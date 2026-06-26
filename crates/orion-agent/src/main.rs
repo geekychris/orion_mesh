@@ -43,19 +43,28 @@ struct Args {
     inventory_every_n_heartbeats: u32,
 }
 
-/// In-memory map: instance_id → (kind, name). Populated when the agent
-/// receives a `ControlRun`; used to label outgoing `LogLine`s.
+/// Per-instance metadata tracked by the agent. Populated when the agent
+/// receives a `ControlRun`; used to label outgoing `LogLine`s and to answer
+/// /v1/instances queries from the controller.
+#[derive(Clone)]
+struct InstanceMeta {
+    kind: WorkloadKind,
+    name: ResourceName,
+    replica_index: u32,
+    started_at: chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Default)]
 struct InstanceRegistry {
-    by_id: Mutex<HashMap<Uuid, (WorkloadKind, ResourceName)>>,
+    by_id: Mutex<HashMap<Uuid, InstanceMeta>>,
 }
 
 impl InstanceRegistry {
-    fn record(&self, id: Uuid, kind: WorkloadKind, name: ResourceName) {
-        self.by_id.lock().unwrap().insert(id, (kind, name));
+    fn record(&self, id: Uuid, meta: InstanceMeta) {
+        self.by_id.lock().unwrap().insert(id, meta);
     }
 
-    fn get(&self, id: &Uuid) -> Option<(WorkloadKind, ResourceName)> {
+    fn get(&self, id: &Uuid) -> Option<InstanceMeta> {
         self.by_id.lock().unwrap().get(id).cloned()
     }
 
@@ -106,10 +115,12 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             let subject = Topic::Logs.for_node(&node_id.0);
             while let Some((id, stream, line)) = log_rx.recv().await {
-                let Some((_kind, name)) = instances.get(&id) else { continue };
+                let Some(meta) = instances.get(&id) else { continue };
                 let payload = LogLine {
                     node_id: node_id.clone(),
-                    service: name,
+                    service: meta.name,
+                    instance_id: Some(id),
+                    replica_index: meta.replica_index,
                     stream: match stream {
                         OutStream::Stdout => LogStream::Stdout,
                         OutStream::Stderr => LogStream::Stderr,
@@ -276,22 +287,40 @@ async fn dispatch_control(
     if subject.ends_with(".run") {
         let env: Envelope<ControlRun> = serde_json::from_slice(payload)?;
         let spec = env.payload;
-        info!(?spec.kind, %spec.name, instance = %spec.instance_id, "control: run");
-
-        instances.record(spec.instance_id, spec.kind, spec.name.clone());
+        let replicas = spec.replicas.max(1);
+        info!(?spec.kind, %spec.name, instance = %spec.instance_id, replicas, "control: run");
 
         let adapter_name = runtime_adapter_name(&spec.runtime);
         let adapter = registry
             .get(adapter_name)
             .ok_or_else(|| anyhow::anyhow!("no adapter for kind '{adapter_name}'"))?;
-        adapter
-            .launch(LaunchSpec {
-                instance_id: spec.instance_id,
-                name: spec.name,
-                runtime: spec.runtime,
-                log_sink: Some(log_tx.clone()),
-            })
-            .await?;
+
+        for idx in 0..replicas {
+            // 0-th instance reuses the controller-supplied id; siblings get fresh ids
+            // so per-instance tracking + per-line attribution stays unambiguous.
+            let id = if idx == 0 { spec.instance_id } else { Uuid::new_v4() };
+            instances.record(
+                id,
+                InstanceMeta {
+                    kind: spec.kind,
+                    name: spec.name.clone(),
+                    replica_index: idx,
+                    started_at: chrono::Utc::now(),
+                },
+            );
+            // Each replica gets its own ORION_REPLICA_INDEX env var so the workload
+            // can read it and join the right NATS queue group, pick a worker slot, etc.
+            let mut runtime = spec.runtime.clone();
+            inject_replica_env(&mut runtime, idx, replicas);
+            adapter
+                .launch(LaunchSpec {
+                    instance_id: id,
+                    name: spec.name.clone(),
+                    runtime,
+                    log_sink: Some(log_tx.clone()),
+                })
+                .await?;
+        }
     } else if subject.ends_with(".stop") {
         let env: Envelope<ControlStop> = serde_json::from_slice(payload)?;
         let spec = env.payload;
@@ -304,6 +333,20 @@ async fn dispatch_control(
         instances.forget(&spec.instance_id);
     }
     Ok(())
+}
+
+/// Adds ORION_REPLICA_INDEX + ORION_REPLICA_COUNT to the workload's env
+/// (for runtimes that have an env map). Not all runtimes do — silently no-ops
+/// for `peer`, `homeassistant`, etc.
+fn inject_replica_env(rt: &mut orion_types::Runtime, idx: u32, count: u32) {
+    use orion_types::Runtime;
+    let envs = match rt {
+        Runtime::Native { env, .. } => env,
+        Runtime::Docker { env, .. } => env,
+        _ => return,
+    };
+    envs.insert("ORION_REPLICA_INDEX".into(), idx.to_string());
+    envs.insert("ORION_REPLICA_COUNT".into(), count.to_string());
 }
 
 fn runtime_adapter_name(r: &orion_types::Runtime) -> &'static str {

@@ -1,0 +1,19 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: demo-sub-fanout
+  labels: { tier: demo, mode: fanout }
+  annotations:
+    description: |
+      THREE replicas of a NATS subscriber on subject `orion.demo.ipc`, no queue
+      group. Every replica receives every message (fan-out). Dispatching this
+      Service while demo-pub is also running should produce 3× as many "recv"
+      log lines as "sent" lines on the publisher side.
+spec:
+  runtime:
+    kind: native
+    exec: target/release/orion-demo-sub
+    args: ["--subject", "orion.demo.ipc"]
+    env: { NATS_URL: "nats://127.0.0.1:4222" }
+  replicas: 3
+  restart_policy: on_failure

@@ -1,0 +1,21 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: demo-sub-workers
+  labels: { tier: demo, mode: queue-group }
+  annotations:
+    description: |
+      THREE replicas of a NATS subscriber on subject `orion.demo.ipc`, joined to
+      queue group `ipc-workers`. Each message is delivered to exactly ONE
+      replica (load-balanced). This is the typical worker-pool pattern.
+      Dispatching this Service while demo-pub is also running should produce
+      the SAME number of "recv" log lines as "sent" — but spread roughly
+      equally across the three replicas.
+spec:
+  runtime:
+    kind: native
+    exec: target/release/orion-demo-sub
+    args: ["--subject", "orion.demo.ipc", "--queue-group", "ipc-workers"]
+    env: { NATS_URL: "nats://127.0.0.1:4222" }
+  replicas: 3
+  restart_policy: on_failure
