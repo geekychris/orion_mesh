@@ -9,26 +9,26 @@ A **Schedule** fires a Task on a cron expression. The controller has a tick loop
 ```mermaid
 sequenceDiagram
     autonumber
-    participant TICK as controller scheduler_tick_loop (every 5s)
+    participant TICK as scheduler_tick_loop every 5s
     participant S as Store
-    participant SR as ScheduleRegistry (in-mem)
+    participant SR as ScheduleRegistry
     participant DISP as dispatch_workload
     participant A as Agent
 
-    TICK->>S: list_by_kind("Schedule")
+    TICK->>S: list_by_kind Schedule
     S-->>TICK: schedules
     loop each Schedule
-        TICK->>TICK: cron.parse (5-field → 6-field internally)
-        TICK->>SR: read last_fired_at + armed_at
-        TICK->>TICK: next = cron.after(after).next()
-        alt next <= now
-            TICK->>S: resolve task (lookup name or use task_template)
+        TICK->>TICK: cron.parse — 5-field to 6-field
+        TICK->>SR: read last_fired_at and armed_at
+        TICK->>TICK: compute next fire time
+        alt next is past
+            TICK->>S: resolve task — lookup name or use task_template
             S-->>TICK: TaskSpec.runtime
-            TICK->>DISP: dispatch_workload(Task, name, runtime)
-            DISP->>A: ControlRun via orion.control.{node}.run
-            TICK->>SR: last_fired_at=now; fire_count++; next_fire_at = cron.after(now).next()
+            TICK->>DISP: dispatch the Task
+            DISP->>A: ControlRun via orion.control.NODE.run
+            TICK->>SR: record fire and recompute next time
         else not yet
-            TICK->>SR: next_fire_at = next
+            TICK->>SR: store next_fire_at only
         end
     end
 ```

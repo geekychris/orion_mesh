@@ -11,7 +11,7 @@ These resources describe **data and credentials that workloads consume**, not wo
 ```mermaid
 flowchart LR
     Dataset[Dataset resource<br/>locations + formats + capabilities]
-    Workload[Task / Service<br/>requires: { dataset: name } +<br/>prefer_data_locality: true]
+    Workload["Task / Service<br/>requires: dataset name +<br/>prefer_data_locality: true"]
     Scheduler[Phase-5 scheduler]
     Nodes[Nodes that hold the dataset]
     Workload --> Scheduler
