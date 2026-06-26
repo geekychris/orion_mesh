@@ -269,9 +269,105 @@ NATS Core doesn't queue messages for slow subscribers — if a subscriber falls 
 
 ---
 
-## 6. What's not here (yet)
+## 6. Try all three, side-by-side
 
-- **A `Stream` / `Consumer` resource kind** so OrionMesh provisions JetStream for you.
+The Rust / Python / Java demos all expose the same flag surface so you can mix and match. Verified end-to-end recipes for each mode:
+
+### 6.1 Fan-out (`subscribe`, no queue group)
+
+3 replicas; **each receives every message**.
+
+```bash
+CTRL=http://127.0.0.1:7878
+curl -X POST --data-binary @examples/09-ipc/fanout-3-replicas.yaml $CTRL/v1/resources/apply
+curl -X POST --data-binary @examples/09-ipc/demo-pub.yaml          $CTRL/v1/resources/apply
+curl -X POST $CTRL/v1/dispatch/Service/demo-sub-fanout
+sleep 1
+curl -X POST $CTRL/v1/dispatch/Service/demo-pub
+sleep 6
+curl $CTRL/v1/logs/Service/demo-sub-fanout | jq -r '.entries[].line' | grep recv \
+  | sed -E 's/.*\[demo-sub:(r[0-9])\].*/\1/' | sort | uniq -c
+# → 7 r0
+#   7 r1
+#   7 r2   (each replica got the same number → fan-out)
+```
+
+### 6.2 Queue group (`queue_subscribe`, ephemeral)
+
+3 replicas, **load-balanced**; one of them processes each message.
+
+```bash
+curl -X POST --data-binary @examples/09-ipc/queue-group-3-workers.yaml $CTRL/v1/resources/apply
+curl -X POST --data-binary @examples/09-ipc/demo-pub.yaml              $CTRL/v1/resources/apply
+curl -X POST $CTRL/v1/dispatch/Service/demo-sub-workers
+sleep 1
+curl -X POST $CTRL/v1/dispatch/Service/demo-pub
+sleep 6
+curl $CTRL/v1/logs/Service/demo-sub-workers | jq -r '.entries[].line' | grep recv \
+  | sed -E 's/.*\[demo-sub:(r[0-9])\].*/\1/' | sort | uniq -c
+# → 2 r0
+#   2 r1
+#   1 r2   (≈ 5 total → exactly the pub count; spread across workers)
+```
+
+### 6.3 JetStream durable consumer
+
+Persistent + at-least-once + replayable. Same shape as queue group but the messages survive subscriber restarts.
+
+```bash
+curl -X POST --data-binary @examples/09-ipc/jetstream/js-pub.yaml          $CTRL/v1/resources/apply
+curl -X POST --data-binary @examples/09-ipc/jetstream/js-sub-workers.yaml  $CTRL/v1/resources/apply
+curl -X POST $CTRL/v1/dispatch/Service/js-sub-workers
+sleep 1
+curl -X POST $CTRL/v1/dispatch/Service/js-pub
+sleep 10
+curl $CTRL/v1/logs/Service/js-sub-workers | jq -r '.entries[].line' | grep "recv (seq="
+# → [demo-sub:r0] recv (seq=1): tick 1 from r0 at … (subject=orion.demo.js.tick)
+# → [demo-sub:r1] recv (seq=2): tick 2 from r0 at …
+# → …
+```
+
+To demo **replay**: kill a subscriber while the publisher keeps running, then restart it — JetStream will replay every unacked message. See [`examples/09-ipc/jetstream/README.md`](../examples/09-ipc/jetstream/README.md) for the full recipe.
+
+### 6.4 Polyglot mix-and-match
+
+All three languages honour the same flag surface — drop in a Java publisher in place of the Rust one, or run all three subscribers (Rust + Python + Java) against the same stream with different `--durable` names:
+
+```bash
+# Java publishes; Rust + Python each have their own durable consumer
+java -jar examples/09-ipc/polyglot/java/target/orion-demo-js-pub.jar \
+    --stream ORION_DEMO_JS --subject orion.demo.js --interval 0.5 &
+
+./target/release/orion-demo-sub --jetstream --stream ORION_DEMO_JS \
+    --subject orion.demo.js --durable rust-sub &
+
+examples/09-ipc/polyglot/python/.venv/bin/python3 \
+    examples/09-ipc/polyglot/python/js_sub.py \
+    --stream ORION_DEMO_JS --subject orion.demo.js --durable py-sub &
+```
+
+Both subscribers see the exact same `seq` numbers and bodies (verified locally — Java pub → Rust + Python subs both got seq=10/11/12/13).
+
+---
+
+## 7. Behavioural summary
+
+| | Fan-out | Queue group (core) | JetStream durable |
+|---|---|---|---|
+| Pub-side write | `nc.publish` | `nc.publish` | `js.publish` (returns ack with seq) |
+| Sub-side bind | `subscribe(subject)` | `queue_subscribe(subject, group)` | `js.pull_subscribe(subject, durable=name, stream=stream)` |
+| Delivery if no sub | dropped | dropped | retained on broker |
+| Delivery if sub restarts | misses gap | misses gap | replays from last acked seq |
+| Per-msg ack required | no | no | **yes** (`msg.ack()`) |
+| N replicas with same logic | each gets ×N work | shared, ≈ 1/N each | shared via durable, ≈ 1/N each |
+| Disk I/O cost | none | none | per-message persist |
+| Use when | broadcast, telemetry, cache-bust | stateless worker pool | order/business events, replay needed |
+
+---
+
+## 8. What's still not here (yet)
+
+- **A `Stream` / `Consumer` resource kind** so OrionMesh provisions JetStream for you (today: the publisher binary auto-creates the stream; idempotent).
 - **A `Subject` discovery API** — Find subjects by capability across the fleet.
 - **Secret-ref expansion** in env vars (`${vault:nats-token}`).
 - **Replica-aware scheduling** — today all N replicas land on the same node; Phase 5 will spread them.

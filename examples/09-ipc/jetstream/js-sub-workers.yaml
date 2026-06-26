@@ -1,0 +1,27 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: js-sub-workers
+  labels: { tier: demo, transport: jetstream, role: consumer }
+  annotations:
+    description: |
+      THREE replicas of a JetStream subscriber, all binding to the SAME
+      durable consumer name "workers" on stream ORION_DEMO_JS. They share
+      the load — each message acked by exactly one replica. The durable
+      name survives restart: kill one replica, restart it, and it picks up
+      from the last unacked sequence (no replay of already-handled msgs).
+spec:
+  runtime:
+    kind: native
+    exec: target/release/orion-demo-sub
+    args:
+      - --jetstream
+      - --subject
+      - orion.demo.js
+      - --stream
+      - ORION_DEMO_JS
+      - --durable
+      - workers
+    env: { NATS_URL: "nats://127.0.0.1:4222" }
+  replicas: 3
+  restart_policy: on_failure

@@ -1,0 +1,25 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: js-pub
+  labels: { tier: demo, transport: jetstream, role: producer }
+  annotations:
+    description: |
+      Rust JetStream publisher. Auto-creates stream ORION_DEMO_JS bound to
+      subject prefix orion.demo.js.>, then publishes one message per second
+      to orion.demo.js.tick. Every message gets a stream sequence number
+      and is persisted on the broker until acked by every durable consumer.
+spec:
+  runtime:
+    kind: native
+    exec: target/release/orion-demo-pub
+    args:
+      - --jetstream
+      - --subject
+      - orion.demo.js
+      - --stream
+      - ORION_DEMO_JS
+      - --interval-seconds
+      - "1.0"
+    env: { NATS_URL: "nats://127.0.0.1:4222" }
+  restart_policy: on_failure

@@ -1,0 +1,28 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: js-sub-replay
+  labels: { tier: demo, transport: jetstream, role: consumer-single }
+  annotations:
+    description: |
+      ONE JetStream subscriber bound to its own durable consumer
+      "single-replay". With the publisher running continuously, kill this
+      Service (DELETE + agent restart, or `pkill -f orion-demo-sub`) for a
+      while, then dispatch it again — it replays every message produced
+      while it was down. Demonstrates JetStream's durable + replay
+      semantics (vs core NATS which would have dropped those messages).
+spec:
+  runtime:
+    kind: native
+    exec: target/release/orion-demo-sub
+    args:
+      - --jetstream
+      - --subject
+      - orion.demo.js
+      - --stream
+      - ORION_DEMO_JS
+      - --durable
+      - single-replay
+    env: { NATS_URL: "nats://127.0.0.1:4222" }
+  replicas: 1
+  restart_policy: never
