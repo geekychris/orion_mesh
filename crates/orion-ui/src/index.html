@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>OrionMesh</title>
+  <style>
+    :root {
+      --fg: #111;
+      --muted: #666;
+      --dim: #999;
+      --line: #e2e2e2;
+      --bg: #fafafa;
+      --bg-sel: #eef4ff;
+      --accent: #0b6e3d;
+      --err: #b00020;
+      --warn: #b65a00;
+      --code-bg: #1e1e1e;
+      --code-fg: #d4d4d4;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif;
+      margin: 0; padding: 0;
+      color: var(--fg);
+      font-size: 14px;
+    }
+    header {
+      padding: 1rem 1.5rem .75rem;
+      border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; gap: 1rem;
+    }
+    h1 { font-size: 1.2rem; margin: 0; }
+    .subtitle { color: var(--muted); font-size: .8rem; }
+    .subtitle code { background: var(--bg); padding: .1rem .35rem; border-radius: 3px; }
+    .pill {
+      display: inline-block; padding: .1rem .5rem; border-radius: 999px;
+      background: var(--bg); color: var(--muted); font-size: .75rem;
+    }
+    .pill.live { background: #e8f6ee; color: var(--accent); }
+    .pill.offline { background: #fde2e2; color: var(--err); }
+
+    nav.tabs {
+      display: flex; gap: .25rem;
+      padding: 0 1rem;
+      border-bottom: 1px solid var(--line);
+      overflow-x: auto;
+    }
+    nav.tabs button {
+      padding: .65rem 1rem;
+      border: none; background: transparent;
+      cursor: pointer;
+      color: var(--muted);
+      border-bottom: 2px solid transparent;
+      font-size: .9rem;
+      white-space: nowrap;
+    }
+    nav.tabs button:hover { color: var(--fg); }
+    nav.tabs button.active {
+      color: var(--fg);
+      border-bottom-color: var(--accent);
+    }
+    nav.tabs button .count {
+      background: var(--bg); color: var(--muted);
+      padding: .05rem .35rem; border-radius: 3px;
+      font-size: .7rem; margin-left: .35rem;
+    }
+    nav.tabs button.active .count { background: #d8eddf; color: var(--accent); }
+
+    main {
+      padding: 1rem 1.5rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    section.view { display: none; }
+    section.view.active { display: block; }
+
+    .panel { display: grid; grid-template-columns: 1fr 1.2fr; gap: 1.25rem; }
+    .panel .list { min-width: 0; }
+    .panel .detail { min-width: 0; }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: .88rem;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: .45rem .7rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--bg); font-weight: 600; font-size: .8rem; color: var(--muted); }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover { background: var(--bg); }
+    tbody tr.selected { background: var(--bg-sel); }
+
+    .runtime-pill {
+      display: inline-block;
+      background: #eef; color: #224;
+      padding: .05rem .4rem; border-radius: 3px;
+      font-size: .72rem; margin-right: .25rem;
+    }
+    .dim { color: var(--dim); }
+    .muted { color: var(--muted); }
+    .small { font-size: .8rem; }
+
+    .err {
+      padding: .5rem .75rem;
+      border-left: 3px solid var(--err);
+      background: #fff5f5;
+      margin-bottom: 1rem;
+      display: none;
+    }
+    .err.show { display: block; }
+    .notice {
+      padding: .5rem .75rem;
+      border-left: 3px solid var(--warn);
+      background: #fff8ef;
+      margin-bottom: 1rem;
+      font-size: .85rem;
+    }
+
+    .detail-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: .5rem;
+    }
+    .detail-header h2 { margin: 0; font-size: 1rem; }
+    .detail-header .actions { display: flex; gap: .5rem; }
+    button.action {
+      padding: .35rem .75rem; border: 1px solid var(--line);
+      background: white; cursor: pointer; border-radius: 4px;
+      font-size: .8rem; color: var(--fg);
+    }
+    button.action:hover { background: var(--bg); }
+    button.action.danger { color: var(--err); border-color: #f5c2c7; }
+    button.action.danger:hover { background: #fff5f5; }
+    button.action.primary {
+      background: var(--accent); color: white; border-color: var(--accent);
+    }
+    button.action.primary:hover { background: #095f33; }
+    button.action[disabled] { opacity: .5; cursor: not-allowed; }
+
+    pre.yaml {
+      background: var(--code-bg); color: var(--code-fg);
+      padding: 1rem; border-radius: 4px;
+      max-height: 60vh; overflow: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: .8rem; line-height: 1.5;
+      margin: 0;
+    }
+    pre.yaml .k { color: #9cdcfe; }
+    pre.yaml .s { color: #ce9178; }
+    pre.yaml .n { color: #b5cea8; }
+    pre.yaml .b { color: #569cd6; }
+
+    .apply-form { display: flex; flex-direction: column; gap: .75rem; }
+    textarea.yaml-input {
+      width: 100%; min-height: 320px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: .85rem; padding: .75rem;
+      border: 1px solid var(--line); border-radius: 4px;
+      background: var(--bg);
+    }
+    .apply-buttons { display: flex; gap: .5rem; align-items: center; }
+    .apply-result {
+      padding: .5rem .75rem; border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: .8rem; word-break: break-word;
+      display: none;
+    }
+    .apply-result.ok { background: #e8f6ee; color: var(--accent); display: block; }
+    .apply-result.err { background: #fff5f5; color: var(--err); display: block; white-space: pre-wrap; }
+
+    .phase-note {
+      background: #fff8ef; border-left: 3px solid var(--warn);
+      padding: .5rem .75rem; font-size: .82rem;
+      margin-bottom: .75rem;
+    }
+    .phase-note strong { color: var(--warn); }
+
+    footer {
+      margin-top: 2rem; padding: 1rem 1.5rem;
+      color: var(--muted); font-size: .75rem;
+      border-top: 1px solid var(--line);
+    }
+
+    .empty {
+      padding: 2rem;
+      text-align: center;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>OrionMesh</h1>
+  <span id="status" class="pill">connecting…</span>
+  <div class="subtitle">
+    Controller <code>__CONTROLLER_URL__</code>
+    <span class="dim">·</span>
+    refresh: <span id="refresh-clock">–</span>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs"></nav>
+
+<main>
+  <div id="err" class="err"></div>
+  <div id="views"></div>
+</main>
+
+<footer>
+  OrionMesh Phase 1 substrate · UI talks to <code>__CONTROLLER_URL__</code> ·
+  source: <a href="https://github.com/geekychris/orion_mesh">github.com/geekychris/orion_mesh</a>
+</footer>
+
+<script>
+  const CTRL = "__CONTROLLER_URL__";
+  // Kinds whose pages we want to be able to OPEN even when empty (so the operator
+  // can apply the first one). Other kinds show up automatically when populated.
+  const ALWAYS_VISIBLE = new Set(["Nodes", "Apply"]);
+
+  // ------------------------------------------------------------- DOM helpers
+  const $ = sel => document.querySelector(sel);
+  const $$ = sel => Array.from(document.querySelectorAll(sel));
+
+  function el(tag, attrs = {}, ...children) {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (k === "class") e.className = v;
+      else if (k === "html") e.innerHTML = v;
+      else if (k === "onclick") e.onclick = v;
+      else if (k.startsWith("data-")) e.setAttribute(k, v);
+      else e.setAttribute(k, v);
+    }
+    for (const c of children.flat()) {
+      if (c == null) continue;
+      e.append(c.nodeType ? c : document.createTextNode(c));
+    }
+    return e;
+  }
+
+  function fmtBytes(b) {
+    if (!b) return "–";
+    const u = ["B","KB","MB","GB","TB"]; let i = 0; let n = b;
+    while (n >= 1024 && i < u.length-1) { n /= 1024; i++; }
+    return `${n.toFixed(n < 10 ? 1 : 0)} ${u[i]}`;
+  }
+
+  function showErr(msg) {
+    const e = $("#err");
+    e.textContent = msg;
+    e.classList.add("show");
+    const s = $("#status");
+    s.className = "pill offline";
+    s.textContent = "offline";
+  }
+  function clearErr() {
+    $("#err").classList.remove("show");
+    const s = $("#status");
+    s.className = "pill live";
+    s.textContent = "live";
+  }
+
+  // ------------------------------------------------------------- YAML output
+  // Cheap pretty-printer: parse JSON → emit indented YAML-ish with serialization
+  // close enough to what `orion get` would print. Not a strict YAML 1.2 emitter.
+  function jsonToYaml(v, indent = 0) {
+    const pad = "  ".repeat(indent);
+    if (v === null || v === undefined) return "null";
+    if (typeof v === "string") {
+      // Need quotes? Anything containing special chars or that parses as a number.
+      const needsQuote = /[:\\{}\\[\\],&*#?|<>=!%@`'"\\n]/.test(v) || /^\\s/.test(v) || /\\s$/.test(v) || /^(true|false|null|yes|no|on|off|\\d)/i.test(v) || v === "";
+      return needsQuote ? JSON.stringify(v) : v;
+    }
+    if (typeof v === "number" || typeof v === "boolean") return String(v);
+    if (Array.isArray(v)) {
+      if (v.length === 0) return "[]";
+      return v.map(item => {
+        if (typeof item === "object" && item !== null && !Array.isArray(item)) {
+          const inner = jsonToYaml(item, indent + 1).split("\\n");
+          return `${pad}- ${inner[0].trimStart()}\\n${inner.slice(1).join("\\n")}`;
+        }
+        return `${pad}- ${jsonToYaml(item, indent + 1)}`;
+      }).join("\\n");
+    }
+    if (typeof v === "object") {
+      const keys = Object.keys(v);
+      if (keys.length === 0) return "{}";
+      return keys.map(k => {
+        const val = v[k];
+        if (val === null) return `${pad}${k}: null`;
+        if (typeof val === "object") {
+          if (Array.isArray(val) && val.length === 0) return `${pad}${k}: []`;
+          if (!Array.isArray(val) && Object.keys(val).length === 0) return `${pad}${k}: {}`;
+          return `${pad}${k}:\\n${jsonToYaml(val, indent + 1)}`;
+        }
+        return `${pad}${k}: ${jsonToYaml(val, 0)}`;
+      }).join("\\n");
+    }
+    return String(v);
+  }
+
+  function colorizeYaml(s) {
+    return s
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/^(\\s*)([a-zA-Z_][a-zA-Z0-9_-]*)(:)/gm, '$1<span class="k">$2</span>$3')
+      .replace(/: (true|false|null)$/gm, ': <span class="b">$1</span>')
+      .replace(/: (-?\\d+(?:\\.\\d+)?)$/gm, ': <span class="n">$1</span>')
+      .replace(/: "([^"]*)"/g, ': <span class="s">"$1"</span>');
+  }
+
+  // ------------------------------------------------------------- state
+  const state = {
+    activeTab: "Nodes",
+    nodes: [],
+    kinds: [],
+    countsByKind: {},
+    listByKind: {},
+    selectedByKind: {},  // kind -> name of selected row
+  };
+
+  // ------------------------------------------------------------- API calls
+  async function api(path, opts = {}) {
+    const r = await fetch(`${CTRL}${path}`, opts);
+    if (!r.ok) {
+      const txt = await r.text().catch(() => r.statusText);
+      throw new Error(`${r.status} ${r.statusText}: ${txt}`);
+    }
+    if (r.status === 204) return null;
+    const ct = r.headers.get("content-type") || "";
+    return ct.startsWith("application/json") ? await r.json() : await r.text();
+  }
+
+  // ------------------------------------------------------------- refresh
+  async function refresh() {
+    try {
+      const [nodes, kindsRes] = await Promise.all([
+        api("/v1/nodes"),
+        api("/v1/kinds"),
+      ]);
+      state.nodes = nodes;
+      state.kinds = kindsRes.kinds;
+      const counts = await Promise.all(state.kinds.map(async k => {
+        try {
+          const rows = await api(`/v1/resources/${k}`);
+          state.listByKind[k] = rows;
+          return [k, rows.length];
+        } catch (_) { return [k, 0]; }
+      }));
+      state.countsByKind = Object.fromEntries(counts);
+
+      render();
+      clearErr();
+      $("#refresh-clock").textContent = new Date().toLocaleTimeString();
+    } catch (e) {
+      showErr(String(e));
+    }
+  }
+
+  // ------------------------------------------------------------- render: tabs
+  function renderTabs() {
+    const tabs = $("#tabs");
+    tabs.innerHTML = "";
+    const make = (name, count, active) => {
+      const b = el("button", { class: active ? "active" : "" }, name);
+      if (count != null) b.append(el("span", { class: "count" }, String(count)));
+      b.onclick = () => { state.activeTab = name; render(); };
+      tabs.append(b);
+    };
+
+    make("Nodes", state.nodes.length, state.activeTab === "Nodes");
+    for (const k of state.kinds) {
+      const c = state.countsByKind[k] || 0;
+      if (c === 0) continue;
+      make(k, c, state.activeTab === k);
+    }
+    make("Apply", null, state.activeTab === "Apply");
+  }
+
+  // ------------------------------------------------------------- render: views
+  function render() {
+    renderTabs();
+    const v = $("#views");
+    v.innerHTML = "";
+
+    if (state.activeTab === "Nodes") v.append(viewNodes());
+    else if (state.activeTab === "Apply") v.append(viewApply());
+    else v.append(viewKind(state.activeTab));
+  }
+
+  function viewNodes() {
+    const wrap = el("section", { class: "view active" });
+    if (state.nodes.length === 0) {
+      wrap.append(el("div", { class: "empty" }, "no agents reporting yet"));
+      return wrap;
+    }
+    const tbl = el("table");
+    tbl.append(el("thead", {}, el("tr", {},
+      el("th", {}, "Node"),
+      el("th", {}, "Arch / OS"),
+      el("th", {}, "CPU / Mem"),
+      el("th", {}, "Runtimes"),
+      el("th", {}, "Last seen"))));
+    const tb = el("tbody");
+    for (const n of state.nodes) {
+      const inv = n.inventory || {};
+      tb.append(el("tr", {},
+        el("td", {}, el("strong", {}, n.node_id), el("br"), el("span", { class: "dim small" }, `v${n.agent_version}`)),
+        el("td", {}, inv.arch ? `${inv.arch} · ${inv.os}` : el("span", { class: "dim" }, "–")),
+        el("td", {}, inv.cpu_cores ? `${inv.cpu_cores} cores · ${fmtBytes(inv.mem_total_bytes)}` : el("span", { class: "dim" }, "–")),
+        el("td", { html: (inv.runtimes || []).map(r => `<span class="runtime-pill">${r}</span>`).join("") || '<span class="dim">–</span>' }),
+        el("td", {}, new Date(n.last_seen_at).toLocaleString())));
+    }
+    tbl.append(tb);
+    wrap.append(tbl);
+    return wrap;
+  }
+
+  function viewKind(kind) {
+    const wrap = el("section", { class: "view active" });
+    const rows = state.listByKind[kind] || [];
+    const isWorkload = (kind === "Service" || kind === "Task");
+
+    if (isWorkload) {
+      const note = el("div", { class: "phase-note" });
+      note.innerHTML =
+        `<strong>Phase 1:</strong> Applying a ${kind} stores it. ` +
+        `The reconciler + scheduler that publishes <code>orion.control.&lt;node&gt;.run</code> ` +
+        `lands in Phase 5. The Dispatch button below is a stub that returns 501.`;
+      wrap.append(note);
+    }
+
+    if (rows.length === 0) {
+      wrap.append(el("div", { class: "empty" }, `no ${kind} resources yet — apply one from the Apply tab`));
+      return wrap;
+    }
+
+    const panel = el("div", { class: "panel" });
+
+    // Left: list
+    const list = el("div", { class: "list" });
+    const tbl = el("table");
+    tbl.append(el("thead", {}, el("tr", {},
+      el("th", {}, "Name"),
+      el("th", {}, "Summary"))));
+    const tb = el("tbody");
+    const selected = state.selectedByKind[kind] || rows[0]?.metadata?.name;
+    for (const r of rows) {
+      const name = r.metadata.name;
+      const tr = el("tr", { class: name === selected ? "selected" : "" });
+      tr.onclick = () => { state.selectedByKind[kind] = name; render(); };
+      tr.append(el("td", {}, el("strong", {}, name)));
+      tr.append(el("td", {}, summarize(kind, r)));
+      tb.append(tr);
+    }
+    tbl.append(tb);
+    list.append(tbl);
+    panel.append(list);
+
+    // Right: detail
+    const detailWrap = el("div", { class: "detail" });
+    const selectedResource = rows.find(r => r.metadata.name === selected) || rows[0];
+    if (selectedResource) {
+      const header = el("div", { class: "detail-header" },
+        el("h2", {}, `${kind} · ${selectedResource.metadata.name}`));
+      const actions = el("div", { class: "actions" });
+      if (isWorkload) {
+        const dispatch = el("button", { class: "action" }, "Dispatch (Phase 5)");
+        dispatch.onclick = async () => {
+          try {
+            await api(`/v1/dispatch/${kind}/${selectedResource.metadata.name}`, { method: "POST" });
+          } catch (e) { alert(String(e)); }
+        };
+        actions.append(dispatch);
+      }
+      const editBtn = el("button", { class: "action" }, "Edit (copy to Apply)");
+      editBtn.onclick = () => {
+        state.applyDraft = jsonToYaml(selectedResource);
+        state.activeTab = "Apply";
+        render();
+      };
+      actions.append(editBtn);
+      const delBtn = el("button", { class: "action danger" }, "Delete");
+      delBtn.onclick = async () => {
+        if (!confirm(`Delete ${kind}/${selectedResource.metadata.name}?`)) return;
+        try {
+          await api(`/v1/resources/${kind}/${selectedResource.metadata.name}`, { method: "DELETE" });
+          delete state.selectedByKind[kind];
+          await refresh();
+        } catch (e) { alert(String(e)); }
+      };
+      actions.append(delBtn);
+      header.append(actions);
+      detailWrap.append(header);
+
+      const pre = el("pre", { class: "yaml" });
+      pre.innerHTML = colorizeYaml(jsonToYaml(selectedResource));
+      detailWrap.append(pre);
+    }
+    panel.append(detailWrap);
+
+    wrap.append(panel);
+    return wrap;
+  }
+
+  function summarize(kind, r) {
+    const s = r.spec || {};
+    switch (kind) {
+      case "Service": {
+        const rt = s.runtime?.kind || "?";
+        const replicas = s.replicas ?? 1;
+        return el("span", { class: "small muted" }, `${rt} · ${replicas} replica${replicas===1?"":"s"} · ${s.restart_policy || "always"}`);
+      }
+      case "Task": {
+        const rt = s.runtime?.kind || "?";
+        const retry = s.retry?.max_attempts ? `, retry x${s.retry.max_attempts}` : "";
+        return el("span", { class: "small muted" }, `${rt}${retry}`);
+      }
+      case "Dataset":
+        return el("span", { class: "small muted" }, `${(s.locations || []).length} location(s) · ${(s.formats || []).join(",") || "–"}`);
+      case "Model":
+        return el("span", { class: "small muted" }, `${(s.variants || []).length} variant(s) · served by ${(s.served_by || []).length} node(s)`);
+      case "Runtime":
+        return el("span", { class: "small muted" }, `${s.runtime_kind} · ${s.base_url}`);
+      case "Schedule":
+        return el("span", { class: "small muted" }, `${s.cron} · ${s.task ? "→ "+s.task : "inline template"}`);
+      case "Capability":
+        return el("span", { class: "small muted" }, s.description || s.capability);
+      default:
+        return el("span", { class: "small dim" }, kind);
+    }
+  }
+
+  // ------------------------------------------------------------- view: apply
+  function viewApply() {
+    const wrap = el("section", { class: "view active" });
+    wrap.append(el("p", { class: "small muted" },
+      "Paste any OrionMesh resource YAML. ",
+      el("strong", {}, "Validate"),
+      " parses + runs Resource::validate() without storing. ",
+      el("strong", {}, "Apply"),
+      " stores it (POST /v1/resources/apply)."));
+
+    const form = el("div", { class: "apply-form" });
+
+    const ta = el("textarea", { class: "yaml-input", placeholder: "kind: Service\\nmetadata: { name: my-service }\\nspec:\\n  runtime: { kind: native, exec: /bin/true }\\n" });
+    ta.value = state.applyDraft || SAMPLE_YAML;
+    ta.oninput = () => { state.applyDraft = ta.value; };
+    form.append(ta);
+
+    const result = el("div", { class: "apply-result" });
+    const buttons = el("div", { class: "apply-buttons" });
+
+    const validateBtn = el("button", { class: "action" }, "Validate");
+    validateBtn.onclick = async () => {
+      result.className = "apply-result";
+      result.textContent = "";
+      try {
+        const out = await api("/v1/resources/apply?dry_run=1", {
+          method: "POST",
+          headers: { "content-type": "application/yaml" },
+          body: ta.value,
+        });
+        result.className = "apply-result ok";
+        result.textContent = `OK · ${out.kind}/${out.name} (validate-only)`;
+      } catch (e) {
+        result.className = "apply-result err";
+        result.textContent = String(e);
+      }
+    };
+    buttons.append(validateBtn);
+
+    const applyBtn = el("button", { class: "action primary" }, "Apply");
+    applyBtn.onclick = async () => {
+      result.className = "apply-result";
+      result.textContent = "";
+      try {
+        const out = await api("/v1/resources/apply", {
+          method: "POST",
+          headers: { "content-type": "application/yaml" },
+          body: ta.value,
+        });
+        result.className = "apply-result ok";
+        result.textContent = `Applied · ${out.kind}/${out.name} · generation ${out.generation}`;
+        await refresh();
+        state.activeTab = out.kind;
+        state.selectedByKind[out.kind] = out.name;
+        render();
+      } catch (e) {
+        result.className = "apply-result err";
+        result.textContent = String(e);
+      }
+    };
+    buttons.append(applyBtn);
+
+    const clearBtn = el("button", { class: "action" }, "Clear");
+    clearBtn.onclick = () => {
+      ta.value = SAMPLE_YAML;
+      state.applyDraft = "";
+      result.className = "apply-result";
+      result.textContent = "";
+    };
+    buttons.append(clearBtn);
+
+    form.append(buttons, result);
+
+    const samples = el("details");
+    samples.append(el("summary", { class: "small muted" }, "Try a sample"));
+    const list = el("div", { class: "small" });
+    for (const [label, body] of SAMPLE_LIBRARY) {
+      const link = el("a", { href: "#", class: "small" }, label);
+      link.onclick = (e) => { e.preventDefault(); ta.value = body; state.applyDraft = body; };
+      list.append(link, " · ");
+    }
+    samples.append(list);
+    form.append(samples);
+
+    wrap.append(form);
+    return wrap;
+  }
+
+  const SAMPLE_YAML = `apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: hello-service
+  labels: { tier: demo }
+spec:
+  runtime:
+    kind: native
+    exec: /bin/sleep
+    args: ["3600"]
+  replicas: 1
+  restart_policy: always
+`;
+
+  const SAMPLE_LIBRARY = [
+    ["native Service", SAMPLE_YAML],
+    ["docker Service with health", `apiVersion: orionmesh.dev/v1
+kind: Service
+metadata: { name: web-frontend }
+spec:
+  runtime: { kind: docker, image: nginx:alpine }
+  replicas: 2
+  ports:
+    - { name: http, port: 80 }
+  health:
+    kind: http
+    path: /
+    port: 80
+  restart_policy: on_failure
+`],
+    ["Task with retry", `apiVersion: orionmesh.dev/v1
+kind: Task
+metadata: { name: nightly-rollup }
+spec:
+  runtime: { kind: native, exec: /usr/local/bin/rollup }
+  retry: { max_attempts: 3, backoff_seconds: 30 }
+  timeout_seconds: 3600
+`],
+    ["Schedule (reference)", `apiVersion: orionmesh.dev/v1
+kind: Schedule
+metadata: { name: nightly }
+spec:
+  cron: "0 2 * * *"
+  task: nightly-rollup
+`],
+    ["Dataset", `apiVersion: orionmesh.dev/v1
+kind: Dataset
+metadata: { name: code-corpus }
+spec:
+  locations:
+    - { node: demo-mac, path: /data/code, access: ro }
+  formats: [jsonl, parquet]
+  capabilities: [embeddings]
+`],
+    ["Model with variants", `apiVersion: orionmesh.dev/v1
+kind: Model
+metadata: { name: qwen-coder }
+spec:
+  model_id: qwen2.5-coder-32b
+  variants:
+    - { format: gguf, quant: q4_k_m, memory_gb: 22.0, context_window: 32768 }
+  served_by: [demo-mac]
+`],
+    ["Peer Runtime", `apiVersion: orionmesh.dev/v1
+kind: Runtime
+metadata: { name: kqueue-default }
+spec:
+  runtime_kind: kqueue
+  base_url: "http://kqueue.local:8080"
+  config: { jetstreamPrefix: "kq." }
+`],
+  ];
+
+  // ------------------------------------------------------------- boot
+  refresh();
+  setInterval(refresh, 3000);
+</script>
+</body>
+</html>

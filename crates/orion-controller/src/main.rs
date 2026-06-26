@@ -10,12 +10,13 @@
 use anyhow::{Context, Result};
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     middleware::from_fn_with_state,
     response::IntoResponse,
     routing::{get, post},
 };
+use serde::Deserialize;
 use tower_http::cors::{Any, CorsLayer};
 use clap::Parser;
 use futures::StreamExt;
@@ -105,8 +106,11 @@ async fn main() -> Result<()> {
 
     let router = Router::new()
         .route("/v1/nodes", get(list_nodes))
+        .route("/v1/kinds", get(list_kinds))
         .route("/v1/resources/:kind", get(list_resources))
+        .route("/v1/resources/:kind/:name", get(get_resource).delete(delete_resource))
         .route("/v1/resources/apply", post(apply_resource))
+        .route("/v1/dispatch/:kind/:name", post(dispatch_stub))
         .layer(from_fn_with_state(auth, orion_auth::http::require_bearer))
         // /health is intentionally outside the auth layer — useful for liveness probes.
         .route("/health", get(health))
@@ -200,24 +204,117 @@ async fn list_resources(
     Ok(Json(rs))
 }
 
+async fn get_resource(
+    State(state): State<AppState>,
+    Path((kind, name)): Path<(String, String)>,
+) -> Result<Json<Resource>, ApiError> {
+    match state
+        .store
+        .get_resource(&kind, "_", &name)
+        .await
+        .map_err(ApiError::store)?
+    {
+        Some(r) => Ok(Json(r)),
+        None => Err(ApiError::not_found(format!("{kind}/{name} not found"))),
+    }
+}
+
+async fn delete_resource(
+    State(state): State<AppState>,
+    Path((kind, name)): Path<(String, String)>,
+) -> Result<Json<DeleteOutcome>, ApiError> {
+    let removed = state
+        .store
+        .delete_resource(&kind, "_", &name)
+        .await
+        .map_err(ApiError::store)?;
+    if !removed {
+        return Err(ApiError::not_found(format!("{kind}/{name} not found")));
+    }
+    Ok(Json(DeleteOutcome { kind, name, deleted: true }))
+}
+
+/// All resource kinds the API surface knows about — for UI tab generation.
+#[derive(Serialize)]
+struct KindsView {
+    kinds: &'static [&'static str],
+}
+
+async fn list_kinds() -> Json<KindsView> {
+    Json(KindsView {
+        kinds: &[
+            "Node", "Service", "Task", "Job", "Schedule", "Dataset", "Model",
+            "Project", "Secret", "Volume", "Network", "Runtime", "Capability",
+            "Policy", "Integration",
+        ],
+    })
+}
+
+#[derive(Deserialize)]
+struct ApplyQuery {
+    #[serde(default)]
+    dry_run: Option<String>,
+}
+
+impl ApplyQuery {
+    fn is_dry_run(&self) -> bool {
+        matches!(
+            self.dry_run.as_deref(),
+            Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "")
+        )
+    }
+}
+
 async fn apply_resource(
     State(state): State<AppState>,
+    Query(q): Query<ApplyQuery>,
     body: String,
 ) -> Result<Json<ApplyOutcome>, ApiError> {
     let r = Resource::from_yaml(&body)
         .map_err(|e| ApiError::bad_request(format!("yaml parse: {e}")))?;
     r.validate()
         .map_err(|e| ApiError::bad_request(format!("validate: {e}")))?;
+    let kind = r.kind_str().to_owned();
+    let name = r.metadata.name.0.clone();
+
+    if q.is_dry_run() {
+        // Validate-only: no store mutation. UI uses this for the "Validate" button.
+        return Ok(Json(ApplyOutcome {
+            kind,
+            name,
+            generation: 0,
+            dry_run: true,
+        }));
+    }
+
     let generation = state
         .store
         .upsert_resource(&r)
         .await
         .map_err(ApiError::store)?;
     Ok(Json(ApplyOutcome {
-        kind: r.kind_str().to_owned(),
-        name: r.metadata.name.0.clone(),
+        kind,
+        name,
         generation,
+        dry_run: false,
     }))
+}
+
+/// Placeholder for the scheduler dispatch surface — returns 501 with a clear
+/// message so the UI can show what's coming without lying about behaviour.
+async fn dispatch_stub(
+    Path((kind, name)): Path<(String, String)>,
+) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        format!(
+            "Dispatch for {kind}/{name} is Phase 5. The reconciler + scheduler \
+             that turns 'desired' into 'running on agent X' isn't built yet.\n\n\
+             Today, applying a resource stores it in SQLite. When Phase 5 ships, \
+             this endpoint will publish orion.control.<node>.run to the chosen \
+             node and you'll see it appear via orion.service.register."
+        ),
+    )
 }
 
 #[derive(Serialize)]
@@ -225,6 +322,14 @@ struct ApplyOutcome {
     kind: String,
     name: String,
     generation: u64,
+    dry_run: bool,
+}
+
+#[derive(Serialize)]
+struct DeleteOutcome {
+    kind: String,
+    name: String,
+    deleted: bool,
 }
 
 // ----------------------------------------------------------- error mapping
@@ -237,6 +342,9 @@ struct ApiError {
 impl ApiError {
     fn bad_request(msg: impl Into<String>) -> Self {
         Self { status: StatusCode::BAD_REQUEST, message: msg.into() }
+    }
+    fn not_found(msg: impl Into<String>) -> Self {
+        Self { status: StatusCode::NOT_FOUND, message: msg.into() }
     }
     fn store(e: orion_store::StoreError) -> Self {
         Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: e.to_string() }
