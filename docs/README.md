@@ -7,17 +7,21 @@ flowchart LR
     Install["**installation.md**<br/>get it built and running"]
     Usage["**usage.md**<br/>CLI, HTTP, YAML examples"]
     Examples["**examples.md**<br/>annotated example tree<br/>+ runnable recipes"]
+    Skills["**skills.md**<br/>Claude skills + Python helpers<br/>run tasks, services, schedules"]
     Arch["**architecture.md**<br/>topology, NATS, storage, sequences"]
     Design["**design.md**<br/>why each choice was made"]
 
     Install --> Usage
     Usage --> Examples
+    Usage --> Skills
     Examples -.references.-> Arch
+    Skills -.references.-> Arch
     Arch -.references.-> Design
 
     style Install  fill:#eef
     style Usage    fill:#eef
     style Examples fill:#eef
+    style Skills   fill:#eef
     style Arch     fill:#efe
     style Design   fill:#fee
 ```
@@ -27,6 +31,7 @@ flowchart LR
 | [installation.md](installation.md) | You want to build OrionMesh, configure auth, or run it as a system service |
 | [usage.md](usage.md) | You want to author resources, drive the CLI, or hit the HTTP API |
 | [examples.md](examples.md) | You want a guided tour of the `examples/` tree with copy-pasteable CLI recipes |
+| [skills.md](skills.md) | You want Claude (or scripts) to drive OrionMesh for you — apply, dispatch, schedule, tail logs |
 | [architecture.md](architecture.md) | You're modifying the code or trying to understand how the pieces talk |
 | [design.md](design.md) | You're considering reversing a decision and want the trade-off recorded |
 
