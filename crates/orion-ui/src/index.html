@@ -178,6 +178,48 @@
     }
     .phase-note strong { color: var(--warn); }
 
+    /* ---- demo cards (Demo tab) ---- */
+    .demo-card {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      background: white;
+    }
+    .demo-card h3 { margin: 0 0 .25rem; font-size: .95rem; }
+    .demo-card .desc { color: var(--muted); font-size: .8rem; margin-bottom: .75rem; }
+    .demo-card label { display: block; font-size: .75rem; color: var(--muted); margin-bottom: .25rem; }
+    .demo-card .row {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;
+    }
+    .demo-card textarea {
+      width: 100%;
+      min-height: 140px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: .8rem;
+      padding: .5rem;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+    }
+    .verdict {
+      padding: .5rem .75rem;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: .8rem;
+      margin-top: .5rem;
+      background: var(--bg);
+    }
+    .verdict.match { background: #e8f6ee; color: var(--accent); }
+    .verdict.nomatch { background: #fff5f5; color: var(--err); }
+    .verdict.neutral { background: var(--bg); color: var(--fg); }
+    .match-line { padding: .1rem 0; font-family: ui-monospace, Menlo, monospace; }
+    .match-line .ok { color: var(--accent); font-weight: 600; margin-right: .4rem; }
+    .match-line .fail { color: var(--err); font-weight: 600; margin-right: .4rem; }
+    .bulk-step { padding: .15rem 0; font-family: ui-monospace, Menlo, monospace; font-size: .8rem; }
+    .bulk-step .ok { color: var(--accent); }
+    .bulk-step .fail { color: var(--err); }
+    .bulk-step .pending { color: var(--muted); }
+
     footer {
       margin-top: 2rem; padding: 1rem 1.5rem;
       color: var(--muted); font-size: .75rem;
@@ -377,6 +419,7 @@
       make(k, c, state.activeTab === k);
     }
     make("Apply", null, state.activeTab === "Apply");
+    make("Demo", null, state.activeTab === "Demo");
   }
 
   // ------------------------------------------------------------- render: views
@@ -387,6 +430,7 @@
 
     if (state.activeTab === "Nodes") v.append(viewNodes());
     else if (state.activeTab === "Apply") v.append(viewApply());
+    else if (state.activeTab === "Demo") v.append(viewDemo());
     else v.append(viewKind(state.activeTab));
   }
 
@@ -693,6 +737,474 @@ spec:
   config: { jetstreamPrefix: "kq." }
 `],
   ];
+
+  // ------------------------------------------------------------- demo logic
+  // Faithful JS reproductions of the Rust matchers. Canonical:
+  //   crates/orion-types/src/capability.rs (AttrMatch dispatch + selector)
+  //   crates/orion-scheduler/src/lib.rs    (Placement filter)
+
+  const OP_KEYS = new Set(["eq","ne","gt","gte","lt","lte"]);
+
+  function attrMatchVariant(check) {
+    if (Array.isArray(check)) return "OneOf";
+    if (check && typeof check === "object" && !Array.isArray(check)) {
+      const ks = Object.keys(check);
+      if (ks.length > 0 && ks.every(k => OP_KEYS.has(k))) return "Op";
+    }
+    return "Equals";
+  }
+
+  function deepEqual(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+
+  function evalAttrMatch(actual, check) {
+    const v = attrMatchVariant(check);
+    if (v === "OneOf") {
+      return { variant: v, pass: check.some(c => deepEqual(c, actual)), detail: `actual ${JSON.stringify(actual)} in ${JSON.stringify(check)}` };
+    }
+    if (v === "Op") {
+      const checks = [];
+      let pass = true;
+      if ("eq"  in check) { const ok = deepEqual(actual, check.eq);  pass = pass && ok; checks.push(`eq=${JSON.stringify(check.eq)}:${ok?'✓':'✗'}`); }
+      if ("ne"  in check) { const ok = !deepEqual(actual, check.ne); pass = pass && ok; checks.push(`ne=${JSON.stringify(check.ne)}:${ok?'✓':'✗'}`); }
+      if ("gt"  in check) { const ok = Number(actual) >  check.gt;   pass = pass && ok; checks.push(`gt=${check.gt}:${ok?'✓':'✗'}`); }
+      if ("gte" in check) { const ok = Number(actual) >= check.gte;  pass = pass && ok; checks.push(`gte=${check.gte}:${ok?'✓':'✗'}`); }
+      if ("lt"  in check) { const ok = Number(actual) <  check.lt;   pass = pass && ok; checks.push(`lt=${check.lt}:${ok?'✓':'✗'}`); }
+      if ("lte" in check) { const ok = Number(actual) <= check.lte;  pass = pass && ok; checks.push(`lte=${check.lte}:${ok?'✓':'✗'}`); }
+      return { variant: v, pass, detail: `actual=${JSON.stringify(actual)} ${checks.join(',')}` };
+    }
+    return { variant: "Equals", pass: deepEqual(actual, check), detail: `actual=${JSON.stringify(actual)} == ${JSON.stringify(check)}` };
+  }
+
+  function matchSelector(advertised, selector) {
+    const results = [];
+    for (const [capName, attrChecks] of Object.entries(selector || {})) {
+      const cap = (advertised || []).find(c => c.name === capName);
+      if (!cap) {
+        results.push({ capName, attrName: "(name)", pass: false, detail: `no advertised capability '${capName}'` });
+        continue;
+      }
+      for (const [attrName, check] of Object.entries(attrChecks || {})) {
+        const actual = (cap.attributes || {})[attrName];
+        if (actual === undefined) {
+          results.push({ capName, attrName, pass: false, detail: `advertisement is missing attribute '${attrName}'` });
+          continue;
+        }
+        const r = evalAttrMatch(actual, check);
+        results.push({ capName, attrName, pass: r.pass, detail: `${r.variant}: ${r.detail}` });
+      }
+    }
+    return { results, allPass: results.length > 0 && results.every(r => r.pass) };
+  }
+
+  function matchPlacement(nodes, placement) {
+    return (nodes || []).map(n => {
+      const fails = [];
+      if (Array.isArray(placement.arch) && placement.arch.length && !placement.arch.includes(n.arch)) {
+        fails.push(`arch ${n.arch} not in ${JSON.stringify(placement.arch)}`);
+      }
+      if (Array.isArray(placement.os) && placement.os.length && !placement.os.includes(n.os)) {
+        fails.push(`os ${n.os} not in ${JSON.stringify(placement.os)}`);
+      }
+      if (placement.gpu) {
+        const gs = n.gpus || [];
+        const ok = gs.some(g => {
+          if (placement.gpu.vendor && g.vendor !== placement.gpu.vendor) return false;
+          if (placement.gpu.min_vram_gb != null && g.vram_gb < placement.gpu.min_vram_gb) return false;
+          return true;
+        });
+        if (!ok) fails.push(`no GPU matching ${JSON.stringify(placement.gpu)}`);
+      }
+      for (const [k, v] of Object.entries(placement.node_labels || {})) {
+        if ((n.labels || {})[k] !== v) fails.push(`label ${k} expected '${v}', got '${(n.labels||{})[k] ?? '(missing)'}'`);
+      }
+      return { node_id: n.node_id, pass: fails.length === 0, fails };
+    });
+  }
+
+  // ------------------------------------------------------------- view: demo
+  function viewDemo() {
+    const wrap = el("section", { class: "view active" });
+    const intro = el("div", { class: "phase-note" });
+    intro.innerHTML =
+      "Interactive demos. The matchers reproduce the Rust logic in pure JS — the " +
+      "canonical impls live in <code>crates/orion-types/src/capability.rs</code> and " +
+      "<code>crates/orion-scheduler/src/lib.rs</code>. Editing here doesn't change any " +
+      "stored resources.";
+    wrap.append(intro);
+
+    wrap.append(demoCardAttrMatch());
+    wrap.append(demoCardCapability());
+    wrap.append(demoCardPlacement());
+    wrap.append(demoCardBulkApply());
+    return wrap;
+  }
+
+  function makeCard(title, desc) {
+    const card = el("div", { class: "demo-card" });
+    card.append(el("h3", {}, title));
+    card.append(el("div", { class: "desc" }, desc));
+    return card;
+  }
+
+  function demoCardAttrMatch() {
+    const card = makeCard(
+      "AttrMatch dispatch",
+      "Paste any JSON value; see which AttrMatch variant the selector deserializer picks for it.");
+    const ta = el("textarea", { rows: 3, style: "min-height: 60px" });
+    ta.value = `{ "gte": 24 }`;
+    card.append(ta);
+
+    const out = el("div", { class: "verdict neutral" });
+    card.append(out);
+
+    const samples = el("div", { class: "small muted", style: "margin-top: .5rem" });
+    for (const [label, val] of [
+      ["bare string", `"amiga_schematics"`],
+      ["bare number", `12`],
+      ["array", `["pdf", "png"]`],
+      ["op {gte}", `{ "gte": 24 }`],
+      ["op {lt, gt}", `{ "gt": 0, "lt": 100 }`],
+      ["object (non-op)", `{ "vendor": "nvidia", "min_vram_gb": 24 }`],
+      ["object {}", `{}`],
+    ]) {
+      const a = el("a", { href: "#" }, label);
+      a.onclick = (e) => { e.preventDefault(); ta.value = val; evaluate(); };
+      samples.append(a, " · ");
+    }
+    card.append(samples);
+
+    const evaluate = () => {
+      try {
+        const v = JSON.parse(ta.value);
+        const variant = attrMatchVariant(v);
+        const explanations = {
+          OneOf: "JSON array → matches if the advertised attribute is one of these values",
+          Op:    "Object whose keys are all comparison ops → applies the numeric/equality ops",
+          Equals: "Anything else → exact deep-equality with the advertised attribute",
+        };
+        out.className = "verdict match";
+        out.innerHTML = `<strong>→ ${variant}</strong><br><span class="small">${explanations[variant]}</span>`;
+      } catch (e) {
+        out.className = "verdict nomatch";
+        out.textContent = "JSON parse error: " + e.message;
+      }
+    };
+    ta.oninput = evaluate;
+    setTimeout(evaluate, 0);
+    return card;
+  }
+
+  function demoCardCapability() {
+    const card = makeCard(
+      "Capability matcher",
+      "Does a workload's requires: block match a Service's advertised capabilities: block?");
+
+    const row = el("div", { class: "row" });
+    const advBox = el("div");
+    advBox.append(el("label", {}, "Advertised by the Service (Capabilities[])"));
+    const advTA = el("textarea");
+    advTA.value = JSON.stringify([
+      { name: "search", attributes: { dataset: "amiga_schematics", format: "pdf", min_vram_gb: 12 } },
+      { name: "llm",    attributes: { model: "qwen-coder", context_window: 32768 } }
+    ], null, 2);
+    advBox.append(advTA);
+
+    const selBox = el("div");
+    selBox.append(el("label", {}, "Required by the workload (CapabilitySelector)"));
+    const selTA = el("textarea");
+    selTA.value = JSON.stringify({
+      search: {
+        dataset: "amiga_schematics",
+        format: ["pdf", "png"],
+        min_vram_gb: { gte: 8 }
+      }
+    }, null, 2);
+    selBox.append(selTA);
+
+    row.append(advBox, selBox);
+    card.append(row);
+
+    const verdict = el("div", { class: "verdict neutral" });
+    card.append(verdict);
+
+    const samples = el("div", { class: "small muted", style: "margin-top: .5rem" });
+    samples.append("Try: ");
+    const presets = [
+      ["clean match", null], // resets to defaults
+      ["wrong dataset", { adv: [{name:"search",attributes:{dataset:"other",format:"pdf"}}], sel: {search:{dataset:"amiga_schematics"}} }],
+      ["vram too small", { adv: [{name:"llm",attributes:{model:"qwen",context_window:8192}}], sel: {llm:{context_window:{gte:16000}}} }],
+      ["capability missing", { adv: [{name:"web",attributes:{}}], sel: {search:{dataset:"x"}} }],
+    ];
+    for (const [label, preset] of presets) {
+      const a = el("a", { href: "#" }, label);
+      a.onclick = (e) => {
+        e.preventDefault();
+        if (preset) {
+          advTA.value = JSON.stringify(preset.adv, null, 2);
+          selTA.value = JSON.stringify(preset.sel, null, 2);
+        } else {
+          advTA.value = JSON.stringify([
+            { name: "search", attributes: { dataset: "amiga_schematics", format: "pdf", min_vram_gb: 12 } }
+          ], null, 2);
+          selTA.value = JSON.stringify({ search: { dataset: "amiga_schematics", format: ["pdf","png"], min_vram_gb: { gte: 8 } } }, null, 2);
+        }
+        evaluate();
+      };
+      samples.append(a, " · ");
+    }
+    card.append(samples);
+
+    const evaluate = () => {
+      try {
+        const adv = JSON.parse(advTA.value);
+        const sel = JSON.parse(selTA.value);
+        const { results, allPass } = matchSelector(adv, sel);
+        verdict.className = "verdict " + (allPass ? "match" : "nomatch");
+        verdict.innerHTML = "";
+        verdict.append(el("strong", {}, allPass ? "✓ MATCH" : "✗ NO MATCH"));
+        if (!results.length) {
+          verdict.append(el("div", { class: "small", style: "margin-top:.25rem" }, "selector is empty"));
+        }
+        for (const r of results) {
+          const line = el("div", { class: "match-line" });
+          line.innerHTML = `<span class="${r.pass?'ok':'fail'}">${r.pass?'✓':'✗'}</span> ${r.capName}.${r.attrName} — ${r.detail}`;
+          verdict.append(line);
+        }
+      } catch (e) {
+        verdict.className = "verdict nomatch";
+        verdict.textContent = "JSON parse error: " + e.message;
+      }
+    };
+    advTA.oninput = evaluate;
+    selTA.oninput = evaluate;
+    setTimeout(evaluate, 0);
+    return card;
+  }
+
+  function demoCardPlacement() {
+    const card = makeCard(
+      "Placement simulator",
+      "Define a Placement; see which fleet nodes would survive the scheduler's filter step.");
+
+    const row = el("div", { class: "row" });
+    const fleetBox = el("div");
+    fleetBox.append(el("label", {}, "Candidate fleet (edit, or click 'Use live fleet')"));
+    const fleetTA = el("textarea");
+    const defaultFleet = [
+      { node_id: "pi5",        arch: "arm64",   os: "linux", gpus: [],
+        labels: { site: "belmont", power: "mains" } },
+      { node_id: "gpu-rig",    arch: "x86_64",  os: "linux",
+        gpus: [{ vendor: "nvidia", vram_gb: 24 }],
+        labels: { site: "belmont", power: "mains" } },
+      { node_id: "mac-studio", arch: "arm64",   os: "macos",
+        gpus: [{ vendor: "apple", vram_gb: 96 }],
+        labels: { site: "orlando", power: "mains" } },
+      { node_id: "macbook",    arch: "arm64",   os: "macos",
+        gpus: [{ vendor: "apple", vram_gb: 16 }],
+        labels: { site: "remote", power: "battery" } },
+    ];
+    fleetTA.value = JSON.stringify(defaultFleet, null, 2);
+    fleetBox.append(fleetTA);
+
+    const placeBox = el("div");
+    placeBox.append(el("label", {}, "Placement (Placement type)"));
+    const placeTA = el("textarea");
+    placeTA.value = JSON.stringify({
+      arch: ["arm64", "x86_64"],
+      os: ["linux"],
+      gpu: { vendor: "nvidia", min_vram_gb: 16 },
+      node_labels: { site: "belmont" }
+    }, null, 2);
+    placeBox.append(placeTA);
+
+    row.append(fleetBox, placeBox);
+    card.append(row);
+
+    const liveBtn = el("button", { class: "action", style: "margin-top:.5rem" }, "Use live fleet (from /v1/nodes)");
+    liveBtn.onclick = () => {
+      const live = state.nodes.map(n => ({
+        node_id: n.node_id,
+        arch: n.inventory?.arch,
+        os: n.inventory?.os,
+        gpus: n.inventory?.gpus || [],
+        labels: n.inventory?.labels || {},
+      }));
+      fleetTA.value = JSON.stringify(live, null, 2);
+      evaluate();
+    };
+    card.append(liveBtn);
+
+    const verdict = el("div", { class: "verdict neutral" });
+    card.append(verdict);
+
+    const evaluate = () => {
+      try {
+        const fleet = JSON.parse(fleetTA.value);
+        const placement = JSON.parse(placeTA.value);
+        const results = matchPlacement(fleet, placement);
+        const survivors = results.filter(r => r.pass).map(r => r.node_id);
+        verdict.className = "verdict " + (survivors.length ? "match" : "nomatch");
+        verdict.innerHTML = "";
+        verdict.append(el("strong", {}, survivors.length ? `${survivors.length} of ${results.length} nodes survive` : "✗ no nodes match"));
+        if (survivors.length) verdict.append(el("div", { class: "small", style: "margin: .25rem 0" }, "Survivors: " + survivors.join(", ")));
+        for (const r of results) {
+          const line = el("div", { class: "match-line" });
+          if (r.pass) {
+            line.innerHTML = `<span class="ok">✓</span> ${r.node_id}`;
+          } else {
+            line.innerHTML = `<span class="fail">✗</span> ${r.node_id} — ${r.fails.join('; ')}`;
+          }
+          verdict.append(line);
+        }
+      } catch (e) {
+        verdict.className = "verdict nomatch";
+        verdict.textContent = "JSON parse error: " + e.message;
+      }
+    };
+    fleetTA.oninput = evaluate;
+    placeTA.oninput = evaluate;
+    setTimeout(evaluate, 0);
+    return card;
+  }
+
+  // Demo resources are name-prefixed so we can clean them up safely.
+  const DEMO_SET = [
+    ["Service · demo-amiga-search", "Service", "demo-amiga-search", `apiVersion: orionmesh.dev/v1
+kind: Service
+metadata: { name: demo-amiga-search }
+spec:
+  runtime: { kind: docker, image: amiga-search:latest }
+  replicas: 1
+  capabilities:
+    - name: search
+      attributes: { dataset: amiga_schematics, protocol: http }
+`],
+    ["Service · demo-web (docker + health)", "Service", "demo-web", `apiVersion: orionmesh.dev/v1
+kind: Service
+metadata: { name: demo-web }
+spec:
+  runtime: { kind: docker, image: nginx:alpine }
+  ports: [{ name: http, port: 80 }]
+  health: { kind: http, path: /, port: 80 }
+  restart_policy: on_failure
+`],
+    ["Task · demo-train (GPU + retry + locality)", "Task", "demo-train", `apiVersion: orionmesh.dev/v1
+kind: Task
+metadata: { name: demo-train }
+spec:
+  runtime: { kind: python, module: train }
+  placement:
+    gpu: { vendor: nvidia, min_vram_gb: 24 }
+    acceleration: cuda
+  prefer_data_locality: true
+  retry: { max_attempts: 3, backoff_seconds: 60 }
+  timeout_seconds: 7200
+`],
+    ["Schedule · demo-nightly (inline)", "Schedule", "demo-nightly", `apiVersion: orionmesh.dev/v1
+kind: Schedule
+metadata: { name: demo-nightly }
+spec:
+  cron: "0 2 * * *"
+  task_template:
+    runtime: { kind: native, exec: /usr/local/bin/snapshot }
+    timeout_seconds: 600
+`],
+    ["Dataset · demo-corpus (multi-location)", "Dataset", "demo-corpus", `apiVersion: orionmesh.dev/v1
+kind: Dataset
+metadata: { name: demo-corpus }
+spec:
+  locations:
+    - { node: pi5, path: /data/corpus, access: ro }
+    - { node: gpu-rig, path: /mnt/corpus, access: rw }
+  formats: [jsonl]
+  capabilities: [embeddings]
+`],
+    ["Model · demo-qwen (variants)", "Model", "demo-qwen", `apiVersion: orionmesh.dev/v1
+kind: Model
+metadata: { name: demo-qwen }
+spec:
+  model_id: qwen2.5-coder-32b
+  variants:
+    - { format: gguf, quant: q4_k_m, memory_gb: 22.0, context_window: 32768 }
+    - { format: mlx,  quant: int8,   memory_gb: 36.0, context_window: 32768 }
+`],
+    ["Runtime · demo-kqueue (peer)", "Runtime", "demo-kqueue", `apiVersion: orionmesh.dev/v1
+kind: Runtime
+metadata: { name: demo-kqueue }
+spec:
+  runtime_kind: kqueue
+  base_url: "http://kqueue.local:8080"
+  config: { jetstreamPrefix: "kq." }
+`],
+  ];
+
+  function demoCardBulkApply() {
+    const card = makeCard(
+      "Bulk apply walkthrough",
+      "Apply a curated set of demo resources end-to-end. Names are prefixed 'demo-' so 'Clear demo' below removes only these.");
+
+    const status = el("div");
+    card.append(status);
+
+    const renderInitial = () => {
+      status.innerHTML = "";
+      for (const [label] of DEMO_SET) {
+        const line = el("div", { class: "bulk-step" }, el("span", { class: "pending" }, "○"), " ", label);
+        status.append(line);
+      }
+    };
+    renderInitial();
+
+    const buttons = el("div", { style: "display:flex; gap:.5rem; margin-top:.75rem" });
+    const applyBtn = el("button", { class: "action primary" }, "Apply all");
+    applyBtn.onclick = async () => {
+      renderInitial();
+      const lines = status.querySelectorAll(".bulk-step");
+      for (let i = 0; i < DEMO_SET.length; i++) {
+        const [label, , , yaml] = DEMO_SET[i];
+        const line = lines[i];
+        try {
+          const r = await api("/v1/resources/apply", {
+            method: "POST",
+            headers: { "content-type": "application/yaml" },
+            body: yaml,
+          });
+          line.innerHTML = `<span class="ok">✓</span> ${label} — generation ${r.generation}`;
+        } catch (e) {
+          line.innerHTML = `<span class="fail">✗</span> ${label} — ${e.message}`;
+          break;
+        }
+      }
+      await refresh();
+    };
+    buttons.append(applyBtn);
+
+    const clearBtn = el("button", { class: "action danger" }, "Clear demo");
+    clearBtn.onclick = async () => {
+      if (!confirm(`Delete all demo resources (${DEMO_SET.length} items prefixed 'demo-')?`)) return;
+      renderInitial();
+      const lines = status.querySelectorAll(".bulk-step");
+      for (let i = 0; i < DEMO_SET.length; i++) {
+        const [label, kind, name] = DEMO_SET[i];
+        const line = lines[i];
+        try {
+          await api(`/v1/resources/${kind}/${name}`, { method: "DELETE" });
+          line.innerHTML = `<span class="ok">✓</span> deleted ${kind}/${name}`;
+        } catch (e) {
+          if (String(e).includes("404")) {
+            line.innerHTML = `<span class="pending">·</span> ${kind}/${name} — wasn't there`;
+          } else {
+            line.innerHTML = `<span class="fail">✗</span> ${label} — ${e.message}`;
+          }
+        }
+      }
+      await refresh();
+    };
+    buttons.append(clearBtn);
+
+    card.append(buttons);
+    return card;
+  }
 
   // ------------------------------------------------------------- boot
   refresh();
