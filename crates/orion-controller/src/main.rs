@@ -296,6 +296,17 @@ impl InstanceRegistry {
         let mut by_id = self.by_id.lock().unwrap();
         ids.iter().filter_map(|i| by_id.remove(i)).collect()
     }
+
+    /// Find the workload kind ("Service" or "Task") for a given name.
+    /// Used by subscribe_logs so each LogLine is stored under the correct
+    /// kind exactly once, instead of double-pushed under both rings.
+    fn kind_for_name(&self, name: &str) -> Option<String> {
+        let by_id = self.by_id.lock().unwrap();
+        by_id
+            .values()
+            .find(|r| r.name == name)
+            .map(|r| r.kind.clone())
+    }
 }
 
 /// Observed state of every Schedule the controller has seen.
@@ -525,32 +536,26 @@ async fn subscribe_logs(
                     orion_bus::LogStream::Stdout => "stdout",
                     orion_bus::LogStream::Stderr => "stderr",
                 };
-                // The kind isn't on the LogLine; we don't track instance→kind on
-                // the controller yet, so dispatch by name into BOTH Service and
-                // Task rings — the UI picks the right one based on which kind
-                // tab is open.
+                // The LogLine doesn't carry kind, but the InstanceRegistry knows
+                // the kind for each workload (set at record_dispatch). Look it
+                // up so each line lands in exactly ONE ring instead of being
+                // double-pushed under both "Service" and "Task". Default to
+                // "Service" when the registry hasn't seen the workload yet
+                // (e.g. early log lines that arrive before record_dispatch).
+                let kind = instances
+                    .kind_for_name(&line.service.0)
+                    .unwrap_or_else(|| "Service".to_owned());
                 let entry = LogEntry {
                     at: env.at,
                     node_id: line.node_id.0.clone(),
                     stream: stream.to_owned(),
                     line: line.line.clone(),
                 };
-                logs.push("Service", &line.service.0, entry.clone());
-                logs.push("Task", &line.service.0, entry);
+                logs.push(&kind, &line.service.0, entry);
                 if let Some(iid) = line.instance_id {
-                    // Same ambiguity — note under both kinds; only the matching
-                    // workload's instances panel will surface it.
                     instances.note_line(
                         iid,
-                        "Service",
-                        &line.service.0,
-                        &line.node_id.0,
-                        line.replica_index,
-                        env.at,
-                    );
-                    instances.note_line(
-                        iid,
-                        "Task",
+                        &kind,
                         &line.service.0,
                         &line.node_id.0,
                         line.replica_index,

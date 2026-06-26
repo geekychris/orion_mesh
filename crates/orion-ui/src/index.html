@@ -242,6 +242,31 @@
     .log-row .stream.err { color: #f88; }
     .logs-empty { color: var(--muted); font-size: .8rem; padding: .5rem; }
 
+    /* ---- log search result rows (two-line layout; workload names can be long) ---- */
+    .search-row {
+      padding: .35rem .25rem;
+      border-bottom: 1px solid #2a2a2a;
+    }
+    .search-row:last-child { border-bottom: none; }
+    .search-row-header {
+      display: flex;
+      gap: .8rem;
+      align-items: baseline;
+      font-size: .72rem;
+      margin-bottom: .15rem;
+    }
+    .search-row-header .ts { color: #888; min-width: 4.5rem; }
+    .search-row-header .workload { color: #6cc; font-weight: 600; flex: 1; min-width: 0; word-break: break-all; }
+    .search-row-header .stream { color: #aaa; }
+    .search-row-header .stream.err { color: #f88; }
+    .search-line {
+      font-family: ui-monospace, Menlo, monospace;
+      font-size: .8rem;
+      color: var(--code-fg);
+      word-break: break-word;
+      padding-left: .5rem;
+    }
+
     footer {
       margin-top: 2rem; padding: 1rem 1.5rem;
       color: var(--muted); font-size: .75rem;
@@ -1290,11 +1315,14 @@ spec:
         }
         out.innerHTML = "";
         for (const h of hits) {
-          const r = el("div", { class: "log-row" });
-          r.append(el("span", { class: "ts" }, h.at.slice(11,19)));
-          r.append(el("span", { class: "stream" }, `${h.kind}/${h.name}`));
-          r.append(el("span", {}, h.line));
-          out.append(r);
+          const row = el("div", { class: "search-row" });
+          const header = el("div", { class: "search-row-header" });
+          header.append(el("span", { class: "ts" }, h.at.slice(11,19)));
+          header.append(el("span", { class: "workload" }, `${h.kind}/${h.name}`));
+          header.append(el("span", { class: "stream" + (h.stream === "stderr" ? " err" : "") }, h.stream));
+          row.append(header);
+          row.append(el("div", { class: "search-line" }, h.line));
+          out.append(row);
         }
       } catch (e) {
         out.innerHTML = `<div class="logs-empty">error: ${e}</div>`;
