@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 /// DNS-1123-style resource name. Validated lightly at the boundary.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(transparent)]
 pub struct ResourceName(pub String);
 
@@ -19,8 +19,14 @@ impl From<&str> for ResourceName {
     }
 }
 
+impl From<String> for ResourceName {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
 /// Stable identifier for a node. Set at agent first-boot; persisted locally.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(transparent)]
 pub struct NodeId(pub String);
 
@@ -36,6 +42,12 @@ impl From<&str> for NodeId {
     }
 }
 
+impl From<String> for NodeId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
 /// Common metadata block shared by every resource kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Metadata {
@@ -46,10 +58,8 @@ pub struct Metadata {
     pub labels: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub annotations: BTreeMap<String, String>,
-}
-
-impl Default for ResourceName {
-    fn default() -> Self {
-        Self(String::new())
-    }
+    /// Monotonic counter bumped by the controller on every spec mutation.
+    /// `Status::observed_generation` is compared against this for staleness checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
 }

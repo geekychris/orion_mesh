@@ -15,6 +15,10 @@ path = "src/main.rs"
 [dependencies]
 orion-types.workspace = true
 orion-bus.workspace = true
+orion-auth.workspace = true
+orion-store.workspace = true
+orion-scheduler.workspace = true
+orion-devportal.workspace = true
 tokio.workspace = true
 futures.workspace = true
 async-nats.workspace = true
@@ -29,4 +33,3 @@ axum.workspace = true
 tower.workspace = true
 tower-http.workspace = true
 chrono.workspace = true
-redb.workspace = true

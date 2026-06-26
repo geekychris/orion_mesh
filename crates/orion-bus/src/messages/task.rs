@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Controller asks a specific node to execute a task.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskSubmit {
     pub task_id: Uuid,
     pub task: ResourceName,
@@ -15,14 +15,14 @@ pub struct TaskSubmit {
 }
 
 /// Lifecycle event for an in-flight task.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskEvent {
     pub task_id: Uuid,
     pub node_id: NodeId,
     pub outcome: TaskOutcome,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskOutcome {
     Accepted,

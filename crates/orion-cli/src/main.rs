@@ -60,7 +60,8 @@ async fn main() -> Result<()> {
             let yaml = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
             let resource = Resource::from_yaml(&yaml).context("parsing resource yaml")?;
-            println!("ok: kind={} name={}", resource.kind_str(), resource.metadata().name);
+            resource.validate().context("validating resource")?;
+            println!("ok: kind={} name={}", resource.kind_str(), resource.metadata.name);
         }
     }
     Ok(())

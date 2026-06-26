@@ -3,13 +3,13 @@ use serde::{Deserialize, Serialize};
 
 /// Periodic metric snapshot. Subject: `orion.metrics.{node_id}`.
 /// One message per scrape interval per node; carries multiple samples.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Metric {
     pub node_id: NodeId,
     pub samples: Vec<MetricSample>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetricSample {
     pub name: String,
     pub value: f64,

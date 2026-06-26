@@ -1,20 +1,21 @@
-//! NATS contract for OrionMesh.
+//! NATS contract for OrionMesh — hybrid wide control plane + consolidated data plane.
 //!
-//! Every inter-component message rides one of the topics in [`topics`].
-//! Payloads are wrapped in an [`Envelope`] that carries id, time, and source node.
-//! Adding a new topic is a deliberate act: bump [`PROTOCOL_VERSION`] if the
-//! envelope shape changes incompatibly.
+//! Adding a new topic or message:
+//! 1. Add to [`Topic`] (subject naming convention: `orion.<area>.<verb>`).
+//! 2. Add a payload type in [`messages`].
+//! 3. Re-export from [`messages::*`] and from the crate root.
+//! 4. Bump [`PROTOCOL_VERSION`] only on **incompatible** envelope shape changes.
 
 pub mod messages;
 pub mod topics;
 
 pub use messages::{
-    Capabilities, Envelope, Heartbeat, LogLine, Metric, ServiceRegister, ServiceUnregister,
-    TaskEvent, TaskSubmit,
+    Capabilities, ControlDrain, ControlRestart, ControlRun, ControlStop, Envelope, HealthStatus,
+    Heartbeat, LogLine, LogStream, Metric, MetricSample, NodeInventory, ServiceHealth,
+    ServiceRegister, ServiceUnregister, TaskEvent, TaskOutcome, TaskSubmit, WorkloadKind,
 };
 pub use topics::Topic;
 
-/// Bumped when the envelope wire format changes incompatibly.
 pub const PROTOCOL_VERSION: u32 = 1;
 
 use thiserror::Error;
@@ -24,3 +25,6 @@ pub enum BusError {
     #[error("json encode/decode: {0}")]
     Json(#[from] serde_json::Error),
 }
+
+#[cfg(test)]
+mod tests;

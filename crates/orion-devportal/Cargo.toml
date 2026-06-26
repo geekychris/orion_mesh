@@ -1,0 +1,22 @@
+[package]
+name = "orion-devportal"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Dev Portal HTTP client (peer integration)"
+
+[dependencies]
+orion-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+wiremock = "=0.6.2"

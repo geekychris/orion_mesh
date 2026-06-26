@@ -1,0 +1,29 @@
+[package]
+name = "orion-auth"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Shared cluster token loader + axum bearer middleware + NATS auth helper"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+axum = { workspace = true, optional = true }
+async-nats = { workspace = true, optional = true }
+http = { version = "1", optional = true }
+
+[features]
+default = ["axum", "nats"]
+axum = ["dep:axum", "dep:http"]
+nats = ["dep:async-nats"]
+
+[dev-dependencies]
+tempfile = "3"
+tower = { workspace = true }
+hyper = "1"
+http-body-util = "0.1"

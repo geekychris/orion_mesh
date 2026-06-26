@@ -1,47 +1,49 @@
 //! OrionMesh controller.
 //!
-//! Phase 1 scope: connect to NATS, subscribe to heartbeats, track live nodes in
-//! memory, expose `/health` and `/v1/nodes` over HTTP. Reconciliation, scheduling,
-//! and persistence (`redb`) light up in later phases.
+//! - Subscribes to `orion.heartbeat` and `orion.node.inventory`; updates the
+//!   observed-node cache in SQLite.
+//! - Serves `/health`, `/v1/nodes`, `/v1/resources/{kind}`, `POST /v1/resources/apply`.
+//! - HTTP authenticated via shared cluster token (or open in dev mode).
+//!
+//! Reconciler, scheduler-driven dispatch, and the Find API land in later phases.
 
-use anyhow::Result;
-use axum::{Json, Router, extract::State, routing::get};
-use chrono::{DateTime, Utc};
+use anyhow::{Context, Result};
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    http::StatusCode,
+    middleware::from_fn_with_state,
+    response::IntoResponse,
+    routing::{get, post},
+};
 use clap::Parser;
 use futures::StreamExt;
-use orion_bus::{Envelope, Heartbeat, Topic};
-use orion_types::NodeId;
+use orion_auth::AuthMode;
+use orion_bus::{Envelope, Heartbeat, NodeInventory, Topic};
+use orion_store::Store;
+use orion_types::Resource;
 use serde::Serialize;
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-};
+use std::{net::SocketAddr, sync::Arc};
 use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
 #[command(name = "orion-controller", version, about = "OrionMesh controller")]
 struct Args {
-    /// NATS server URL.
     #[arg(long, env = "ORION_NATS_URL", default_value = "nats://127.0.0.1:4222")]
     nats_url: String,
 
-    /// HTTP bind address.
     #[arg(long, env = "ORION_HTTP_BIND", default_value = "127.0.0.1:7878")]
     bind: SocketAddr,
+
+    /// SQLite file path. `sqlite::memory:` for an ephemeral in-memory store.
+    #[arg(long, env = "ORION_STORE_PATH", default_value = "./orion-state.sqlite")]
+    store_path: String,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct AppState {
-    nodes: Arc<Mutex<HashMap<NodeId, NodeView>>>,
-}
-
-#[derive(Clone, Serialize)]
-struct NodeView {
-    node_id: NodeId,
-    agent_version: String,
-    last_seen: DateTime<Utc>,
-    uptime_seconds: u64,
+    store: Arc<Store>,
+    auth: AuthMode,
 }
 
 #[tokio::main]
@@ -54,24 +56,51 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    info!(nats_url = %args.nats_url, bind = %args.bind, "orion-controller starting");
+    let auth = AuthMode::from_env().context("loading cluster auth")?;
+    info!(
+        nats_url = %args.nats_url,
+        bind = %args.bind,
+        store = %args.store_path,
+        auth_disabled = auth.is_disabled(),
+        "orion-controller starting"
+    );
 
-    let state = AppState::default();
+    let store = Arc::new(Store::open(&args.store_path).await.context("opening store")?);
+    let state = AppState { store: store.clone(), auth: auth.clone() };
 
-    let nats = async_nats::connect(&args.nats_url).await?;
+    let nats = orion_auth::nats::connect_options(&auth)
+        .name("orion-controller")
+        .connect(&args.nats_url)
+        .await
+        .context("connecting to NATS")?;
     info!("connected to NATS");
 
-    let heartbeat_state = state.clone();
-    let nats_subscriber = nats.clone();
-    tokio::spawn(async move {
-        if let Err(e) = subscribe_heartbeats(nats_subscriber, heartbeat_state).await {
-            warn!(error = ?e, "heartbeat subscriber exited");
+    tokio::spawn({
+        let nats = nats.clone();
+        let store = store.clone();
+        async move {
+            if let Err(e) = subscribe_heartbeats(nats, store).await {
+                warn!(error = ?e, "heartbeat subscriber exited");
+            }
+        }
+    });
+    tokio::spawn({
+        let nats = nats.clone();
+        let store = store.clone();
+        async move {
+            if let Err(e) = subscribe_inventory(nats, store).await {
+                warn!(error = ?e, "inventory subscriber exited");
+            }
         }
     });
 
     let router = Router::new()
-        .route("/health", get(health))
         .route("/v1/nodes", get(list_nodes))
+        .route("/v1/resources/:kind", get(list_resources))
+        .route("/v1/resources/apply", post(apply_resource))
+        .layer(from_fn_with_state(auth, orion_auth::http::require_bearer))
+        // /health is intentionally outside the auth layer — useful for liveness probes.
+        .route("/health", get(health))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
@@ -79,20 +108,16 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn subscribe_heartbeats(client: async_nats::Client, state: AppState) -> Result<()> {
+async fn subscribe_heartbeats(client: async_nats::Client, store: Arc<Store>) -> Result<()> {
     let mut sub = client.subscribe(Topic::Heartbeat.as_str().to_owned()).await?;
     info!("subscribed to {}", Topic::Heartbeat.as_str());
     while let Some(msg) = sub.next().await {
         match serde_json::from_slice::<Envelope<Heartbeat>>(&msg.payload) {
             Ok(env) => {
                 let hb = env.payload;
-                let view = NodeView {
-                    node_id: hb.node_id.clone(),
-                    agent_version: hb.agent_version,
-                    last_seen: env.at,
-                    uptime_seconds: hb.uptime_seconds,
-                };
-                state.nodes.lock().unwrap().insert(hb.node_id, view);
+                if let Err(e) = store.touch_node(&hb.node_id.0, &hb.agent_version).await {
+                    warn!(error = ?e, "store touch_node failed");
+                }
             }
             Err(e) => warn!(error = ?e, "malformed heartbeat envelope"),
         }
@@ -100,11 +125,116 @@ async fn subscribe_heartbeats(client: async_nats::Client, state: AppState) -> Re
     Ok(())
 }
 
+async fn subscribe_inventory(client: async_nats::Client, store: Arc<Store>) -> Result<()> {
+    let mut sub = client.subscribe(Topic::NodeInventory.as_str().to_owned()).await?;
+    info!("subscribed to {}", Topic::NodeInventory.as_str());
+    while let Some(msg) = sub.next().await {
+        match serde_json::from_slice::<Envelope<NodeInventory>>(&msg.payload) {
+            Ok(env) => {
+                let inv = env.payload;
+                let inv_json = match serde_json::to_string(&inv) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!(error = ?e, "inventory re-encode failed");
+                        continue;
+                    }
+                };
+                if let Err(e) = store
+                    .set_node_inventory(&inv.node_id.0, &inv.agent_version, &inv_json)
+                    .await
+                {
+                    warn!(error = ?e, "store set_node_inventory failed");
+                }
+            }
+            Err(e) => warn!(error = ?e, "malformed inventory envelope"),
+        }
+    }
+    Ok(())
+}
+
+// ----------------------------------------------------------- HTTP handlers
+
 async fn health() -> &'static str {
     "ok"
 }
 
-async fn list_nodes(State(state): State<AppState>) -> Json<Vec<NodeView>> {
-    let nodes = state.nodes.lock().unwrap().values().cloned().collect();
-    Json(nodes)
+#[derive(Serialize)]
+struct NodeView {
+    node_id: String,
+    agent_version: String,
+    last_seen_at: String,
+    inventory: Option<serde_json::Value>,
+}
+
+async fn list_nodes(State(state): State<AppState>) -> Result<Json<Vec<NodeView>>, ApiError> {
+    let nodes = state.store.list_nodes().await.map_err(ApiError::store)?;
+    let view = nodes
+        .into_iter()
+        .map(|n| NodeView {
+            node_id: n.node_id,
+            agent_version: n.agent_version,
+            last_seen_at: n.last_seen_at.to_rfc3339(),
+            inventory: n
+                .inventory_json
+                .and_then(|s| serde_json::from_str(&s).ok()),
+        })
+        .collect();
+    Ok(Json(view))
+}
+
+async fn list_resources(
+    State(state): State<AppState>,
+    Path(kind): Path<String>,
+) -> Result<Json<Vec<Resource>>, ApiError> {
+    let rs = state.store.list_by_kind(&kind).await.map_err(ApiError::store)?;
+    Ok(Json(rs))
+}
+
+async fn apply_resource(
+    State(state): State<AppState>,
+    body: String,
+) -> Result<Json<ApplyOutcome>, ApiError> {
+    let r = Resource::from_yaml(&body)
+        .map_err(|e| ApiError::bad_request(format!("yaml parse: {e}")))?;
+    r.validate()
+        .map_err(|e| ApiError::bad_request(format!("validate: {e}")))?;
+    let generation = state
+        .store
+        .upsert_resource(&r)
+        .await
+        .map_err(ApiError::store)?;
+    Ok(Json(ApplyOutcome {
+        kind: r.kind_str().to_owned(),
+        name: r.metadata.name.0.clone(),
+        generation,
+    }))
+}
+
+#[derive(Serialize)]
+struct ApplyOutcome {
+    kind: String,
+    name: String,
+    generation: u64,
+}
+
+// ----------------------------------------------------------- error mapping
+
+struct ApiError {
+    status: StatusCode,
+    message: String,
+}
+
+impl ApiError {
+    fn bad_request(msg: impl Into<String>) -> Self {
+        Self { status: StatusCode::BAD_REQUEST, message: msg.into() }
+    }
+    fn store(e: orion_store::StoreError) -> Self {
+        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: e.to_string() }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        (self.status, self.message).into_response()
+    }
 }

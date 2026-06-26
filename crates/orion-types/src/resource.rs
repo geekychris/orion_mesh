@@ -1,279 +1,149 @@
-use crate::{
-    capability::{Capability, CapabilitySelector},
-    metadata::{Metadata, NodeId},
-    placement::{Acceleration, Arch, Gpu, OperatingSystem, Placement},
-    runtime::Runtime,
-};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+//! `Resource` — the top-level wire shape of every desired-state document.
+//!
+//! Wire form (YAML/JSON), plan section 7.1:
+//! ```yaml
+//! apiVersion: orionmesh.dev/v1
+//! kind: Service
+//! metadata: { name: amiga-search, labels: { site: belmont } }
+//! spec:   { ... }
+//! status: { phase: Running, conditions: [...], observedGeneration: 3 }
+//! ```
+//!
+//! Internally we wrap a tagged enum (`ResourceBody`) inside a struct that
+//! carries the apiVersion + metadata so they sit at the top level after serde's
+//! `flatten`. The `kind` field is the body's discriminator and gets merged in.
 
-/// K8s-style discriminated union over every resource the controller manages.
-///
-/// Wire form (YAML/JSON):
-/// ```yaml
-/// kind: Service
-/// metadata: { name: amiga-search }
-/// spec:
-///   runtime: { kind: docker, image: ... }
-///   placement: { arch: [arm64, x86_64], os: [linux] }
-///   requires:
-///     dataset: amiga_schematics
-///   replicas: 1
-/// ```
+use crate::{metadata::Metadata, specs::*, status::Status};
+use serde::{Deserialize, Serialize};
+
+pub const API_VERSION: &str = "orionmesh.dev/v1";
+
+fn default_api_version() -> String {
+    API_VERSION.to_owned()
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Resource {
+    #[serde(rename = "apiVersion", default = "default_api_version")]
+    pub api_version: String,
+    pub metadata: Metadata,
+    #[serde(flatten)]
+    pub body: ResourceBody,
+}
+
+/// `kind:`-discriminated union over every resource kind.
+/// Adding a variant: add it here, add a `spec` type in [`crate::specs`], and
+/// extend [`ResourceBody::kind_str`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
-pub enum Resource {
+pub enum ResourceBody {
     Node {
-        metadata: Metadata,
         spec: NodeSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
     },
     Service {
-        metadata: Metadata,
         spec: ServiceSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
     },
     Task {
-        metadata: Metadata,
         spec: TaskSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
+    },
+    Job {
+        spec: JobSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
     },
     Schedule {
-        metadata: Metadata,
         spec: ScheduleSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
     },
     Dataset {
-        metadata: Metadata,
         spec: DatasetSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
     },
     Model {
-        metadata: Metadata,
         spec: ModelSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
     },
     Project {
-        metadata: Metadata,
         spec: ProjectSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
     },
     Secret {
-        metadata: Metadata,
         spec: SecretSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
     },
     Volume {
-        metadata: Metadata,
         spec: VolumeSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
     },
     Network {
-        metadata: Metadata,
         spec: NetworkSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
     },
+    /// Peer runtime catalog entry (OrionMesh, KQueue, ...).
+    Runtime {
+        spec: RuntimeResourceSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
+    },
+    /// Declared capability schema.
+    Capability {
+        spec: CapabilityResourceSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
+    },
+    Policy {
+        spec: PolicySpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
+    },
+    Integration {
+        spec: IntegrationSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
+    },
+}
+
+impl ResourceBody {
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            ResourceBody::Node { .. } => "Node",
+            ResourceBody::Service { .. } => "Service",
+            ResourceBody::Task { .. } => "Task",
+            ResourceBody::Job { .. } => "Job",
+            ResourceBody::Schedule { .. } => "Schedule",
+            ResourceBody::Dataset { .. } => "Dataset",
+            ResourceBody::Model { .. } => "Model",
+            ResourceBody::Project { .. } => "Project",
+            ResourceBody::Secret { .. } => "Secret",
+            ResourceBody::Volume { .. } => "Volume",
+            ResourceBody::Network { .. } => "Network",
+            ResourceBody::Runtime { .. } => "Runtime",
+            ResourceBody::Capability { .. } => "Capability",
+            ResourceBody::Policy { .. } => "Policy",
+            ResourceBody::Integration { .. } => "Integration",
+        }
+    }
 }
 
 impl Resource {
     pub fn kind_str(&self) -> &'static str {
-        match self {
-            Resource::Node { .. } => "Node",
-            Resource::Service { .. } => "Service",
-            Resource::Task { .. } => "Task",
-            Resource::Schedule { .. } => "Schedule",
-            Resource::Dataset { .. } => "Dataset",
-            Resource::Model { .. } => "Model",
-            Resource::Project { .. } => "Project",
-            Resource::Secret { .. } => "Secret",
-            Resource::Volume { .. } => "Volume",
-            Resource::Network { .. } => "Network",
-        }
+        self.body.kind_str()
     }
 
-    pub fn metadata(&self) -> &Metadata {
-        match self {
-            Resource::Node { metadata, .. }
-            | Resource::Service { metadata, .. }
-            | Resource::Task { metadata, .. }
-            | Resource::Schedule { metadata, .. }
-            | Resource::Dataset { metadata, .. }
-            | Resource::Model { metadata, .. }
-            | Resource::Project { metadata, .. }
-            | Resource::Secret { metadata, .. }
-            | Resource::Volume { metadata, .. }
-            | Resource::Network { metadata, .. } => metadata,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct NodeSpec {
-    pub node_id: NodeId,
-    pub arch: Option<Arch>,
-    pub os: Option<OperatingSystem>,
-    pub gpu: Option<Gpu>,
-    pub acceleration: Option<Acceleration>,
-    pub address: Option<String>,
-    pub labels: BTreeMap<String, String>,
-}
-
-impl Default for NodeSpec {
-    fn default() -> Self {
-        Self {
-            node_id: NodeId(String::new()),
-            arch: None,
-            os: None,
-            gpu: None,
-            acceleration: None,
-            address: None,
-            labels: BTreeMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct ServiceSpec {
-    pub runtime: Option<Runtime>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub replicas: Option<u32>,
-    #[serde(skip_serializing_if = "is_default_placement")]
-    pub placement: Placement,
-    /// `requires:` block. Resolved against advertised Capabilities.
-    #[serde(skip_serializing_if = "is_default_selector")]
-    pub requires: CapabilitySelector,
-    /// What this service *itself* advertises once running.
-    #[serde(skip_serializing_if = "Capability::is_empty")]
-    pub capabilities: Capability,
-}
-
-impl Capability {
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-fn is_default_placement(p: &Placement) -> bool {
-    p == &Placement::default()
-}
-
-fn is_default_selector(s: &CapabilitySelector) -> bool {
-    s == &CapabilitySelector::default()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct TaskSpec {
-    pub runtime: Option<Runtime>,
-    #[serde(skip_serializing_if = "is_default_placement")]
-    pub placement: Placement,
-    #[serde(skip_serializing_if = "is_default_selector")]
-    pub requires: CapabilitySelector,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timeout_seconds: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_retries: Option<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct ScheduleSpec {
-    /// 5-field cron expression.
-    pub cron: String,
-    /// Name of the Task resource this schedule fires.
-    pub task: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct DatasetSpec {
-    pub uri: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub size_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub format: Option<String>,
-    /// Nodes that hold a local copy (capability-aware scheduling).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub located_on: Vec<NodeId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct ModelSpec {
-    pub model_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub backend: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parameters_b: Option<f32>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub served_by: Vec<NodeId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct ProjectSpec {
-    /// Dev Portal asset id, when available.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub asset_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub repo_url: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub services: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct SecretSpec {
-    /// Reference into SecureVault. Plaintext never sits in this struct.
-    pub vault_ref: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct VolumeSpec {
-    pub path: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub mounted_on: Vec<NodeId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct NetworkSpec {
-    pub cidr: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub sites: Vec<String>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::metadata::ResourceName;
-    use crate::placement::{Arch, OperatingSystem};
-
-    #[test]
-    fn roundtrips_amiga_search_example() {
-        // The canonical example from OrionMesh_Architecture_Plan.md.
-        let yaml = r#"
-kind: Service
-metadata:
-  name: amiga-search
-spec:
-  runtime:
-    kind: docker
-    image: amiga-search:latest
-  replicas: 1
-  placement:
-    arch: [arm64, x86_64]
-    os: [linux]
-  requires:
-    dataset: amiga_schematics
-"#;
-        let r = Resource::from_yaml(yaml).unwrap();
-        assert_eq!(r.kind_str(), "Service");
-        assert_eq!(r.metadata().name, ResourceName::from("amiga-search"));
-        match r {
-            Resource::Service { spec, .. } => {
-                assert_eq!(spec.replicas, Some(1));
-                assert!(spec.placement.arch.contains(&Arch::Arm64));
-                assert!(spec.placement.os.contains(&OperatingSystem::Linux));
-                assert_eq!(
-                    spec.requires.require.get("dataset").map(String::as_str),
-                    Some("amiga_schematics"),
-                );
-            }
-            _ => panic!("expected Service"),
-        }
+    pub fn name(&self) -> &str {
+        &self.metadata.name.0
     }
 }
