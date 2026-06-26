@@ -1,0 +1,32 @@
+[package]
+name = "orion-controller"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "OrionMesh controller — desired state + scheduler + discovery"
+
+[[bin]]
+name = "orion-controller"
+path = "src/main.rs"
+
+[dependencies]
+orion-types.workspace = true
+orion-bus.workspace = true
+tokio.workspace = true
+futures.workspace = true
+async-nats.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+chrono.workspace = true
+redb.workspace = true

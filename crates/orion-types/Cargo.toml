@@ -1,0 +1,17 @@
+[package]
+name = "orion-types"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Shared resource model and capability types for OrionMesh"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_yml.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true

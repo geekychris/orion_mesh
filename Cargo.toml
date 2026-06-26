@@ -1,0 +1,53 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/orion-types",
+    "crates/orion-bus",
+    "crates/orion-agent",
+    "crates/orion-controller",
+    "crates/orion-cli",
+    "crates/orion-ui",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.87"
+license = "Apache-2.0 OR MIT"
+publish = false
+repository = "https://github.com/geekychris/orion_mesh"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "fs", "io-util"] }
+futures = "0.3"
+async-trait = "0.1"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yml = "0.0.12"
+
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+async-nats = "0.38"
+
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+clap = { version = "4", features = ["derive", "env"] }
+
+redb = "2"
+
+orion-types = { path = "crates/orion-types" }
+orion-bus = { path = "crates/orion-bus" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
