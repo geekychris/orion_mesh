@@ -10,10 +10,14 @@ JetStream is NATS's persistent + at-least-once layer. Unlike core NATS (which dr
 
 Polyglot JetStream wrappers live under [`../polyglot/python/js_{pub,sub}.py`](../polyglot/python/) and [`../polyglot/java/src/main/java/io/orionmesh/demo/Js{Pub,Sub}.java`](../polyglot/java/). All three share stream + subject conventions so they interoperate.
 
+> **Runnable.** `scripts/run-md.py examples/09-ipc/jetstream/README.md` runs
+> the durability + load-balanced recipes in order, then tears down. To run just
+> one section: `--only durability` or `--only load-balanced`.
+
 ## Run the durability demo
 
-```bash
-CTRL=http://127.0.0.1:7878
+```bash {name=durability}
+CTRL=${ORION_CONTROLLER_URL:-http://127.0.0.1:7878}
 
 # 1. Apply publisher + a single replay-style subscriber
 curl -X POST --data-binary @examples/09-ipc/jetstream/js-pub.yaml             $CTRL/v1/resources/apply
@@ -46,17 +50,31 @@ JetStream remembered the last acked seq (10) and replayed only the unacked ones 
 
 ## Run the load-balanced demo
 
-```bash
-curl -X POST --data-binary @examples/09-ipc/jetstream/js-sub-workers.yaml $CTRL/v1/resources/apply
-curl -X POST $CTRL/v1/dispatch/Service/js-sub-workers   # 3 replicas, all in durable "workers"
+```bash {name=load-balanced}
+CTRL=${ORION_CONTROLLER_URL:-http://127.0.0.1:7878}
+curl -sS -X POST --data-binary @examples/09-ipc/jetstream/js-sub-workers.yaml $CTRL/v1/resources/apply ; echo
+curl -sS -X POST $CTRL/v1/dispatch/Service/js-sub-workers ; echo   # 3 replicas, all in durable "workers"
 sleep 1
-curl -X POST $CTRL/v1/dispatch/Service/js-pub
+curl -sS -X POST $CTRL/v1/dispatch/Service/js-pub ; echo
 sleep 10
-curl $CTRL/v1/logs/Service/js-sub-workers | jq -r '.entries[].line' | grep recv \
+echo "=== load distribution ==="
+curl -s $CTRL/v1/logs/Service/js-sub-workers | jq -r '.entries[].line' | grep recv \
   | sed -E 's/.*\[demo-sub:(r[0-9])\].*/\1/' | sort | uniq -c
 ```
 
 Distribution across r0/r1/r2 will vary — NATS picks whichever consumer is ready. With more publish volume the distribution evens out.
+
+## Tear down
+
+```bash {teardown}
+CTRL=${ORION_CONTROLLER_URL:-http://127.0.0.1:7878}
+curl -sS -X DELETE $CTRL/v1/resources/Service/js-pub > /dev/null
+curl -sS -X DELETE $CTRL/v1/resources/Service/js-sub-replay > /dev/null
+curl -sS -X DELETE $CTRL/v1/resources/Service/js-sub-workers > /dev/null
+pkill -f 'orion-demo-sub.*jetstream' 2>/dev/null || true
+pkill -f 'orion-demo-pub.*jetstream' 2>/dev/null || true
+echo "jetstream demos torn down"
+```
 
 ## When NOT to use JetStream
 

@@ -22,9 +22,14 @@ All three implementations honour the same flags:
 | `--label` | Logical name in stdout. Defaults to `r$ORION_REPLICA_INDEX` if the agent set that env, else the language tag (`py` / `java`). |
 | `--interval` *(pub only)* | Seconds between messages. Default `1.0`. |
 
+> **Runnable.** `scripts/run-md.py examples/09-ipc/polyglot/README.md`
+> runs the `setup` + `interop` recipes end-to-end and tears down. The
+> Terminal-1/Terminal-2 block below is `{skip}` because it expects two
+> separate shells.
+
 ## Setup
 
-```bash
+```bash {name=setup}
 # Rust (one-time)
 cargo build --release -p orion-demo-bins
 
@@ -41,7 +46,7 @@ bash examples/09-ipc/polyglot/java/setup.sh
 
 Each pair talks to the NATS broker directly. With NATS running on `:4222`:
 
-```bash
+```bash {skip}
 # Terminal 1 — Python subscriber
 examples/09-ipc/polyglot/python/.venv/bin/python3 examples/09-ipc/polyglot/python/sub.py --label py
 
@@ -67,20 +72,41 @@ The companion YAMLs in this directory wrap each language as an OrionMesh `Servic
 
 Apply and dispatch any combination:
 
-```bash
-CTRL=http://127.0.0.1:7878
+```bash {name=interop}
+CTRL=${ORION_CONTROLLER_URL:-http://127.0.0.1:7878}
 
-# One Python publisher + one Java subscriber + one Rust subscriber, all queue-grouped
-curl -X POST --data-binary @examples/09-ipc/polyglot/yaml/python-pub.yaml      $CTRL/v1/resources/apply
-curl -X POST --data-binary @examples/09-ipc/polyglot/yaml/java-sub-qg.yaml     $CTRL/v1/resources/apply
-curl -X POST --data-binary @examples/09-ipc/queue-group-3-workers.yaml         $CTRL/v1/resources/apply
-curl -X POST $CTRL/v1/dispatch/Service/java-sub-qg
-curl -X POST $CTRL/v1/dispatch/Service/demo-sub-workers
+# One Python publisher + one Java subscriber + three Rust subscribers, all queue-grouped
+curl -sS -X POST --data-binary @examples/09-ipc/polyglot/yaml/python-pub.yaml      $CTRL/v1/resources/apply ; echo
+curl -sS -X POST --data-binary @examples/09-ipc/polyglot/yaml/java-sub-qg.yaml     $CTRL/v1/resources/apply ; echo
+curl -sS -X POST --data-binary @examples/09-ipc/queue-group-3-workers.yaml         $CTRL/v1/resources/apply ; echo
+curl -sS -X POST $CTRL/v1/dispatch/Service/java-sub-qg     ; echo
+curl -sS -X POST $CTRL/v1/dispatch/Service/demo-sub-workers ; echo
 sleep 1
-curl -X POST $CTRL/v1/dispatch/Service/python-pub
+curl -sS -X POST $CTRL/v1/dispatch/Service/python-pub      ; echo
+
+sleep 6
+echo "=== publisher (python) — last 3 ==="
+curl -s $CTRL/v1/logs/Service/python-pub      | python3 -c "import sys,json;d=json.load(sys.stdin);[print(' ',e['line']) for e in d['entries'][-3:]]"
+echo "=== java subscribers — last 3 ==="
+curl -s $CTRL/v1/logs/Service/java-sub-qg     | python3 -c "import sys,json;d=json.load(sys.stdin);[print(' ',e['line']) for e in d['entries'][-3:]]"
+echo "=== rust subscribers — last 3 ==="
+curl -s $CTRL/v1/logs/Service/demo-sub-workers | python3 -c "import sys,json;d=json.load(sys.stdin);[print(' ',e['line']) for e in d['entries'][-3:]]"
 ```
 
-All three subscribers (Java + Rust × 3 replicas with the same queue group `ipc-workers`) share the load — each message goes to exactly one of the 4 subscriber processes.
+All four subscriber processes (2 Java + 3 Rust = 5 total in the same queue group `ipc-workers`) share the load — each message goes to exactly one of them.
+
+## Tear down
+
+```bash {teardown}
+CTRL=${ORION_CONTROLLER_URL:-http://127.0.0.1:7878}
+for s in python-pub java-sub-qg demo-sub-workers; do
+  curl -sS -X DELETE $CTRL/v1/resources/Service/$s > /dev/null
+done
+pkill -f 'orion-demo-' 2>/dev/null || true
+pkill -f 'js_(pub|sub)\.py' 2>/dev/null || true
+pkill -f 'orion-demo-(js-)?(pub|sub)\.jar' 2>/dev/null || true
+echo "polyglot demo torn down"
+```
 
 ## Why this is a big deal
 

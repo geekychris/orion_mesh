@@ -33,6 +33,37 @@ The companion shell helper that runs every example serially lives at [`examples/
 
 ## How to run an example
 
+## Two ways to drive the examples
+
+### a) Run the README directly
+
+Every README under `examples/` has runnable bash blocks. The repo ships [`scripts/run-md.py`](../scripts/run-md.py) — a stdlib-only Python tool that extracts and executes them in order, sharing one bash session so env vars persist across blocks.
+
+```bash
+# preview what would run
+scripts/run-md.py examples/09-ipc/README.md --list
+
+# end-to-end (verified working as of last test)
+scripts/run-md.py examples/09-ipc/README.md
+
+# pick one named block
+scripts/run-md.py examples/09-ipc/jetstream/README.md --only durability
+
+# step through interactively
+scripts/run-md.py examples/09-ipc/polyglot/README.md --interactive
+```
+
+Verified-runnable READMEs (each runs to a clean teardown):
+- `examples/README.md` — build CLI + validate good/bad + apply + dispatch + teardown
+- `examples/bad/README.md` — every validation failure case (with `{allow_fail}`)
+- `examples/09-ipc/README.md` — pub/sub demo with side-by-side logs
+- `examples/09-ipc/jetstream/README.md` — durability + load-balanced JetStream
+- `examples/09-ipc/polyglot/README.md` — Python + Java + Rust workers sharing a queue group
+
+Block info-strings (`{name=apply}`, `{skip}`, `{allow_fail}`, `{teardown}`) opt into behaviour — see [the runner header docs](../scripts/run-md.py) or [examples/README.md](../examples/README.md).
+
+### b) Type the commands yourself
+
 The four moves you'll repeat:
 
 ```bash
