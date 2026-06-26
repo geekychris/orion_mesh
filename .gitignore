@@ -7,3 +7,11 @@ Cargo.lock.bak
 *.swp
 *.swo
 /.orion-state/
+
+# Python venvs
+**/.venv/
+**/__pycache__/
+
+# Maven build outputs
+**/target/
+examples/09-ipc/polyglot/java/dependency-reduced-pom.xml
