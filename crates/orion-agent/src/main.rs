@@ -1,24 +1,28 @@
 //! OrionMesh node agent.
 //!
-//! Phase 1+ scope: connect to NATS with cluster auth, publish a NodeInventory
+//! Phase 2 scope: connect to NATS with cluster auth, publish a NodeInventory
 //! on connect, publish slim Heartbeats on a ticker, subscribe to the per-node
-//! control plane (Run/Stop/Restart/Drain). The control handler is wired but
-//! delegates to a runtime registry that ships with only the Native adapter.
+//! control plane (Run/Stop/Restart/Drain), forward child stdout/stderr as
+//! orion.logs.{node} envelopes.
 
 use anyhow::{Context, Result};
+use async_nats::Client;
 use clap::Parser;
 use futures::StreamExt;
 use orion_auth::AuthMode;
 use orion_bus::{
-    ControlRun, ControlStop, Envelope, Heartbeat, NodeInventory, Topic, WorkloadKind,
+    ControlRun, ControlStop, Envelope, Heartbeat, LogLine, LogStream, NodeInventory, Topic,
+    WorkloadKind,
 };
-use orion_runtime::{LaunchSpec, NativeAdapter, RuntimeRegistry};
-use orion_types::{Arch, NodeId, OperatingSystem};
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use orion_runtime::{LaunchSpec, LogSink, NativeAdapter, OutStream, RuntimeRegistry};
+use orion_types::{Arch, NodeId, OperatingSystem, ResourceName};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use sysinfo::System;
+use tokio::sync::mpsc;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 #[derive(Parser, Debug)]
 #[command(name = "orion-agent", version, about = "OrionMesh node agent")]
@@ -37,6 +41,27 @@ struct Args {
     /// controller restart (the inventory snapshot isn't durable on NATS Core).
     #[arg(long, default_value_t = 6)]
     inventory_every_n_heartbeats: u32,
+}
+
+/// In-memory map: instance_id → (kind, name). Populated when the agent
+/// receives a `ControlRun`; used to label outgoing `LogLine`s.
+#[derive(Default)]
+struct InstanceRegistry {
+    by_id: Mutex<HashMap<Uuid, (WorkloadKind, ResourceName)>>,
+}
+
+impl InstanceRegistry {
+    fn record(&self, id: Uuid, kind: WorkloadKind, name: ResourceName) {
+        self.by_id.lock().unwrap().insert(id, (kind, name));
+    }
+
+    fn get(&self, id: &Uuid) -> Option<(WorkloadKind, ResourceName)> {
+        self.by_id.lock().unwrap().get(id).cloned()
+    }
+
+    fn forget(&self, id: &Uuid) {
+        self.by_id.lock().unwrap().remove(id);
+    }
 }
 
 #[tokio::main]
@@ -59,12 +84,11 @@ async fn main() -> Result<()> {
 
     info!(node_id = %node_id, nats_url = %args.nats_url, disabled = auth.is_disabled(), "orion-agent starting");
 
-    // Build runtime registry. Native adapter ships by default.
     let mut reg = RuntimeRegistry::new();
     reg.register(Arc::new(NativeAdapter::new()));
     let registry = Arc::new(reg);
+    let instances = Arc::new(InstanceRegistry::default());
 
-    // Connect to NATS using the configured auth mode.
     let nats = orion_auth::nats::connect_options(&auth)
         .name("orion-agent")
         .connect(&args.nats_url)
@@ -72,27 +96,57 @@ async fn main() -> Result<()> {
         .context("connecting to NATS")?;
     info!("connected to NATS");
 
-    // Publish inventory snapshot once.
-    let mut sys = System::new_all();
-    sys.refresh_all();
-    let inventory = build_inventory(&node_id, &sys, &registry);
-    let inv_env = Envelope::new(Some(node_id.clone()), inventory);
-    if let Err(e) = nats
-        .publish(Topic::NodeInventory.as_str().to_owned(), serde_json::to_vec(&inv_env)?.into())
-        .await
+    // Log forwarder: per-process stdout/stderr lines come in via `log_rx` and
+    // get published as Envelope<LogLine> on orion.logs.{node_id}.
+    let (log_tx, mut log_rx) = mpsc::unbounded_channel::<(Uuid, OutStream, String)>();
     {
-        warn!(error = ?e, "inventory publish failed");
+        let nats = nats.clone();
+        let node_id = node_id.clone();
+        let instances = instances.clone();
+        tokio::spawn(async move {
+            let subject = Topic::Logs.for_node(&node_id.0);
+            while let Some((id, stream, line)) = log_rx.recv().await {
+                let Some((_kind, name)) = instances.get(&id) else { continue };
+                let payload = LogLine {
+                    node_id: node_id.clone(),
+                    service: name,
+                    stream: match stream {
+                        OutStream::Stdout => LogStream::Stdout,
+                        OutStream::Stderr => LogStream::Stderr,
+                    },
+                    line,
+                };
+                let env = Envelope::new(Some(node_id.clone()), payload);
+                match serde_json::to_vec(&env) {
+                    Ok(bytes) => {
+                        if let Err(e) = nats.publish(subject.clone(), bytes.into()).await {
+                            warn!(error = ?e, "log publish failed");
+                        }
+                    }
+                    Err(e) => warn!(error = ?e, "log encode failed"),
+                }
+            }
+        });
     }
 
-    // Subscribe to per-node control subjects (Run / Stop / Restart / Drain).
+    let mut sys = System::new_all();
+    sys.refresh_all();
+    publish_inventory(&nats, &node_id, &sys, &registry).await;
+
+    // Subscribe to per-node control subjects.
     for subject in Topic::control_subjects_for_node(&node_id.0) {
         let mut sub = nats.subscribe(subject.clone()).await?;
         let registry = registry.clone();
+        let instances = instances.clone();
+        let log_tx = log_tx.clone();
         let subject_for_log = subject.clone();
         tokio::spawn(async move {
             info!(subject = %subject_for_log, "subscribed to control subject");
             while let Some(msg) = sub.next().await {
-                if let Err(e) = dispatch_control(&subject_for_log, &msg.payload, &registry).await {
+                if let Err(e) =
+                    dispatch_control(&subject_for_log, &msg.payload, &registry, &instances, &log_tx)
+                        .await
+                {
                     warn!(subject = %subject_for_log, error = ?e, "control dispatch failed");
                 }
             }
@@ -108,22 +162,10 @@ async fn main() -> Result<()> {
                 sys.refresh_memory();
                 tick_count = tick_count.wrapping_add(1);
 
-                // Periodically re-publish inventory. Inventory rides on NATS Core
-                // (non-durable), so a controller restart loses the last snapshot —
-                // republishing keeps observed state self-healing.
                 if args.inventory_every_n_heartbeats > 0
                     && tick_count.is_multiple_of(args.inventory_every_n_heartbeats)
                 {
-                    let inv = build_inventory(&node_id, &sys, &registry);
-                    let env = Envelope::new(Some(node_id.clone()), inv);
-                    match serde_json::to_vec(&env) {
-                        Ok(bytes) => {
-                            if let Err(e) = nats.publish(Topic::NodeInventory.as_str().to_owned(), bytes.into()).await {
-                                warn!(error = ?e, "periodic inventory publish failed");
-                            }
-                        }
-                        Err(e) => warn!(error = ?e, "inventory encode failed"),
-                    }
+                    publish_inventory(&nats, &node_id, &sys, &registry).await;
                 }
 
                 let hb = Heartbeat {
@@ -153,6 +195,27 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn publish_inventory(
+    nats: &Client,
+    node_id: &NodeId,
+    sys: &System,
+    registry: &RuntimeRegistry,
+) {
+    let inventory = build_inventory(node_id, sys, registry);
+    let env = Envelope::new(Some(node_id.clone()), inventory);
+    match serde_json::to_vec(&env) {
+        Ok(bytes) => {
+            if let Err(e) = nats
+                .publish(Topic::NodeInventory.as_str().to_owned(), bytes.into())
+                .await
+            {
+                warn!(error = ?e, "inventory publish failed");
+            }
+        }
+        Err(e) => warn!(error = ?e, "inventory encode failed"),
+    }
 }
 
 fn hostname() -> Option<String> {
@@ -207,14 +270,17 @@ async fn dispatch_control(
     subject: &str,
     payload: &[u8],
     registry: &RuntimeRegistry,
+    instances: &Arc<InstanceRegistry>,
+    log_tx: &LogSink,
 ) -> anyhow::Result<()> {
     if subject.ends_with(".run") {
         let env: Envelope<ControlRun> = serde_json::from_slice(payload)?;
         let spec = env.payload;
-        info!(?spec.kind, %spec.name, "control: run");
-        let adapter_name = match spec.kind {
-            WorkloadKind::Service | WorkloadKind::Task => runtime_adapter_name(&spec.runtime),
-        };
+        info!(?spec.kind, %spec.name, instance = %spec.instance_id, "control: run");
+
+        instances.record(spec.instance_id, spec.kind, spec.name.clone());
+
+        let adapter_name = runtime_adapter_name(&spec.runtime);
         let adapter = registry
             .get(adapter_name)
             .ok_or_else(|| anyhow::anyhow!("no adapter for kind '{adapter_name}'"))?;
@@ -223,19 +289,19 @@ async fn dispatch_control(
                 instance_id: spec.instance_id,
                 name: spec.name,
                 runtime: spec.runtime,
+                log_sink: Some(log_tx.clone()),
             })
             .await?;
     } else if subject.ends_with(".stop") {
         let env: Envelope<ControlStop> = serde_json::from_slice(payload)?;
         let spec = env.payload;
         info!(instance_id = %spec.instance_id, "control: stop");
-        // We don't track which adapter owns which instance yet (Phase 2 work).
-        // For MVP: every adapter is asked to stop; only the owner does anything.
         for name in registry.names() {
             if let Some(a) = registry.get(&name) {
                 let _ = a.stop(spec.instance_id).await;
             }
         }
+        instances.forget(&spec.instance_id);
     }
     Ok(())
 }

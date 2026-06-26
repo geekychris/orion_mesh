@@ -9,7 +9,7 @@ pub mod adapter;
 pub mod native;
 pub mod secrets;
 
-pub use adapter::{LaunchSpec, LaunchedInstance, RuntimeAdapter, RuntimeError};
+pub use adapter::{LaunchSpec, LaunchedInstance, LogSink, OutStream, RuntimeAdapter, RuntimeError};
 pub use native::NativeAdapter;
 pub use secrets::{PlaintextResolver, SecretError, SecretResolver};
 

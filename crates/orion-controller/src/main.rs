@@ -1,13 +1,15 @@
 //! OrionMesh controller.
 //!
-//! - Subscribes to `orion.heartbeat` and `orion.node.inventory`; updates the
-//!   observed-node cache in SQLite.
-//! - Serves `/health`, `/v1/nodes`, `/v1/resources/{kind}`, `POST /v1/resources/apply`.
-//! - HTTP authenticated via shared cluster token (or open in dev mode).
-//!
-//! Reconciler, scheduler-driven dispatch, and the Find API land in later phases.
+//! Phase 2 additions over Phase 1:
+//!   - Subscribes to `orion.logs.*` (all per-node log subjects) and keeps a
+//!     ring buffer of the last ~500 lines per (kind, name) in memory.
+//!   - `POST /v1/dispatch/:kind/:name` actually publishes a `ControlRun`
+//!     envelope to a chosen node's `orion.control.{node}.run` subject.
+//!     Phase 5 will replace the "pick the first live node" heuristic with the
+//!     real scheduler.
 
 use anyhow::{Context, Result};
+use async_nats::Client;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -16,17 +18,26 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
-use serde::Deserialize;
-use tower_http::cors::{Any, CorsLayer};
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use futures::StreamExt;
 use orion_auth::AuthMode;
-use orion_bus::{Envelope, Heartbeat, NodeInventory, Topic};
+use orion_bus::{
+    ControlRun, Envelope, Heartbeat, LogLine, NodeInventory, Topic, WorkloadKind,
+};
 use orion_store::Store;
-use orion_types::Resource;
-use serde::Serialize;
-use std::{net::SocketAddr, sync::Arc};
+use orion_types::{Resource, ResourceBody, Runtime};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{HashMap, VecDeque},
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
+use uuid::Uuid;
+
+const LOG_RING_CAPACITY: usize = 500;
 
 #[derive(Parser, Debug)]
 #[command(name = "orion-controller", version, about = "OrionMesh controller")]
@@ -42,10 +53,70 @@ struct Args {
     store_path: String,
 }
 
+/// In-memory ring buffer per workload, keyed by (kind, name).
+#[derive(Default)]
+struct LogBuffer {
+    rings: Mutex<HashMap<(String, String), VecDeque<LogEntry>>>,
+}
+
+#[derive(Clone, Serialize)]
+struct LogEntry {
+    at: DateTime<Utc>,
+    node_id: String,
+    stream: String, // "stdout" or "stderr"
+    line: String,
+}
+
+impl LogBuffer {
+    fn push(&self, kind: &str, name: &str, e: LogEntry) {
+        let mut rings = self.rings.lock().unwrap();
+        let ring = rings.entry((kind.to_owned(), name.to_owned())).or_default();
+        if ring.len() >= LOG_RING_CAPACITY {
+            ring.pop_front();
+        }
+        ring.push_back(e);
+    }
+
+    fn snapshot(&self, kind: &str, name: &str, since_seq: usize) -> (Vec<LogEntry>, usize) {
+        let rings = self.rings.lock().unwrap();
+        match rings.get(&(kind.to_owned(), name.to_owned())) {
+            Some(ring) => {
+                // Treat the front of the ring as the oldest; since_seq is a logical
+                // total counter that we approximate with ring length.
+                let total = ring.len();
+                let start = since_seq.min(total);
+                let entries: Vec<_> = ring.iter().skip(start).cloned().collect();
+                (entries, total)
+            }
+            None => (vec![], 0),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
     store: Arc<Store>,
+    nats: Client,
+    node_id: NodeIdRegistry,
+    logs: Arc<LogBuffer>,
+    #[allow(dead_code)]
     auth: AuthMode,
+}
+
+/// Tracks the most recent live node id (for dispatch). Phase 5 will replace
+/// "first observed node" with the real scheduler.
+#[derive(Clone, Default)]
+struct NodeIdRegistry {
+    last: Arc<Mutex<Option<String>>>,
+}
+
+impl NodeIdRegistry {
+    fn set(&self, id: &str) {
+        *self.last.lock().unwrap() = Some(id.to_owned());
+    }
+    fn get(&self) -> Option<String> {
+        self.last.lock().unwrap().clone()
+    }
 }
 
 #[tokio::main]
@@ -68,8 +139,6 @@ async fn main() -> Result<()> {
     );
 
     let store = Arc::new(Store::open(&args.store_path).await.context("opening store")?);
-    let state = AppState { store: store.clone(), auth: auth.clone() };
-
     let nats = orion_auth::nats::connect_options(&auth)
         .name("orion-controller")
         .connect(&args.nats_url)
@@ -77,11 +146,21 @@ async fn main() -> Result<()> {
         .context("connecting to NATS")?;
     info!("connected to NATS");
 
+    let state = AppState {
+        store: store.clone(),
+        nats: nats.clone(),
+        node_id: NodeIdRegistry::default(),
+        logs: Arc::new(LogBuffer::default()),
+        auth: auth.clone(),
+    };
+
+    // ----- subscribers
     tokio::spawn({
         let nats = nats.clone();
         let store = store.clone();
+        let nodes = state.node_id.clone();
         async move {
-            if let Err(e) = subscribe_heartbeats(nats, store).await {
+            if let Err(e) = subscribe_heartbeats(nats, store, nodes).await {
                 warn!(error = ?e, "heartbeat subscriber exited");
             }
         }
@@ -95,10 +174,16 @@ async fn main() -> Result<()> {
             }
         }
     });
+    tokio::spawn({
+        let nats = nats.clone();
+        let logs = state.logs.clone();
+        async move {
+            if let Err(e) = subscribe_logs(nats, logs).await {
+                warn!(error = ?e, "log subscriber exited");
+            }
+        }
+    });
 
-    // CORS: the orion-ui server runs on a different port (7879) than the API (7878),
-    // so the browser treats it as cross-origin. Permissive is fine because the auth
-    // layer (Authorization: Bearer) is what gates writes — CORS isn't the security boundary.
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -110,9 +195,9 @@ async fn main() -> Result<()> {
         .route("/v1/resources/:kind", get(list_resources))
         .route("/v1/resources/:kind/:name", get(get_resource).delete(delete_resource))
         .route("/v1/resources/apply", post(apply_resource))
-        .route("/v1/dispatch/:kind/:name", post(dispatch_stub))
+        .route("/v1/dispatch/:kind/:name", post(dispatch_resource))
+        .route("/v1/logs/:kind/:name", get(get_logs))
         .layer(from_fn_with_state(auth, orion_auth::http::require_bearer))
-        // /health is intentionally outside the auth layer — useful for liveness probes.
         .route("/health", get(health))
         .layer(cors)
         .with_state(state);
@@ -122,13 +207,18 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn subscribe_heartbeats(client: async_nats::Client, store: Arc<Store>) -> Result<()> {
+async fn subscribe_heartbeats(
+    client: Client,
+    store: Arc<Store>,
+    nodes: NodeIdRegistry,
+) -> Result<()> {
     let mut sub = client.subscribe(Topic::Heartbeat.as_str().to_owned()).await?;
     info!("subscribed to {}", Topic::Heartbeat.as_str());
     while let Some(msg) = sub.next().await {
         match serde_json::from_slice::<Envelope<Heartbeat>>(&msg.payload) {
             Ok(env) => {
                 let hb = env.payload;
+                nodes.set(&hb.node_id.0);
                 if let Err(e) = store.touch_node(&hb.node_id.0, &hb.agent_version).await {
                     warn!(error = ?e, "store touch_node failed");
                 }
@@ -139,7 +229,7 @@ async fn subscribe_heartbeats(client: async_nats::Client, store: Arc<Store>) -> 
     Ok(())
 }
 
-async fn subscribe_inventory(client: async_nats::Client, store: Arc<Store>) -> Result<()> {
+async fn subscribe_inventory(client: Client, store: Arc<Store>) -> Result<()> {
     let mut sub = client.subscribe(Topic::NodeInventory.as_str().to_owned()).await?;
     info!("subscribed to {}", Topic::NodeInventory.as_str());
     while let Some(msg) = sub.next().await {
@@ -166,7 +256,38 @@ async fn subscribe_inventory(client: async_nats::Client, store: Arc<Store>) -> R
     Ok(())
 }
 
-// ----------------------------------------------------------- HTTP handlers
+async fn subscribe_logs(client: Client, logs: Arc<LogBuffer>) -> Result<()> {
+    // Wildcard: every per-node logs subject (orion.logs.<node>) feeds into here.
+    let mut sub = client.subscribe(Topic::Logs.as_str().to_owned()).await?;
+    info!("subscribed to {}", Topic::Logs.as_str());
+    while let Some(msg) = sub.next().await {
+        match serde_json::from_slice::<Envelope<LogLine>>(&msg.payload) {
+            Ok(env) => {
+                let line = env.payload;
+                let stream = match line.stream {
+                    orion_bus::LogStream::Stdout => "stdout",
+                    orion_bus::LogStream::Stderr => "stderr",
+                };
+                // The kind isn't on the LogLine; we don't track instance→kind on
+                // the controller yet, so dispatch by name into BOTH Service and
+                // Task rings — the UI picks the right one based on which kind
+                // tab is open.
+                let entry = LogEntry {
+                    at: env.at,
+                    node_id: line.node_id.0.clone(),
+                    stream: stream.to_owned(),
+                    line: line.line.clone(),
+                };
+                logs.push("Service", &line.service.0, entry.clone());
+                logs.push("Task", &line.service.0, entry);
+            }
+            Err(e) => warn!(error = ?e, "malformed log envelope"),
+        }
+    }
+    Ok(())
+}
+
+// ============================================================ HTTP handlers
 
 async fn health() -> &'static str {
     "ok"
@@ -234,7 +355,6 @@ async fn delete_resource(
     Ok(Json(DeleteOutcome { kind, name, deleted: true }))
 }
 
-/// All resource kinds the API surface knows about — for UI tab generation.
 #[derive(Serialize)]
 struct KindsView {
     kinds: &'static [&'static str],
@@ -278,13 +398,7 @@ async fn apply_resource(
     let name = r.metadata.name.0.clone();
 
     if q.is_dry_run() {
-        // Validate-only: no store mutation. UI uses this for the "Validate" button.
-        return Ok(Json(ApplyOutcome {
-            kind,
-            name,
-            generation: 0,
-            dry_run: true,
-        }));
+        return Ok(Json(ApplyOutcome { kind, name, generation: 0, dry_run: true }));
     }
 
     let generation = state
@@ -292,29 +406,104 @@ async fn apply_resource(
         .upsert_resource(&r)
         .await
         .map_err(ApiError::store)?;
-    Ok(Json(ApplyOutcome {
+    Ok(Json(ApplyOutcome { kind, name, generation, dry_run: false }))
+}
+
+#[derive(Serialize)]
+struct DispatchOutcome {
+    kind: String,
+    name: String,
+    node: String,
+    instance_id: Uuid,
+}
+
+async fn dispatch_resource(
+    State(state): State<AppState>,
+    Path((kind, name)): Path<(String, String)>,
+) -> Result<Json<DispatchOutcome>, ApiError> {
+    if kind != "Service" && kind != "Task" {
+        return Err(ApiError::bad_request(format!(
+            "dispatch is only defined for Service and Task; got {kind}"
+        )));
+    }
+    let resource = state
+        .store
+        .get_resource(&kind, "_", &name)
+        .await
+        .map_err(ApiError::store)?
+        .ok_or_else(|| ApiError::not_found(format!("{kind}/{name} not found")))?;
+
+    let runtime = match &resource.body {
+        ResourceBody::Service { spec, .. } => spec
+            .runtime
+            .clone()
+            .ok_or_else(|| ApiError::bad_request("Service has no runtime"))?,
+        ResourceBody::Task { spec, .. } => spec
+            .runtime
+            .clone()
+            .ok_or_else(|| ApiError::bad_request("Task has no runtime"))?,
+        _ => unreachable!(),
+    };
+
+    let node = state.node_id.get().ok_or_else(|| {
+        ApiError::bad_request("no live nodes — start an agent first")
+    })?;
+
+    let workload_kind = if kind == "Service" {
+        WorkloadKind::Service
+    } else {
+        WorkloadKind::Task
+    };
+
+    let instance_id = Uuid::new_v4();
+    let envelope = Envelope::new(
+        None,
+        ControlRun {
+            instance_id,
+            kind: workload_kind,
+            name: resource.metadata.name.clone(),
+            runtime,
+            generation: resource.metadata.generation.unwrap_or(1),
+        },
+    );
+    let payload = serde_json::to_vec(&envelope).expect("encode ControlRun");
+    let subject = Topic::ControlRun.for_node(&node);
+    state
+        .nats
+        .publish(subject, payload.into())
+        .await
+        .map_err(|e| ApiError::internal(format!("publish control.run: {e}")))?;
+
+    Ok(Json(DispatchOutcome {
         kind,
         name,
-        generation,
-        dry_run: false,
+        node,
+        instance_id,
     }))
 }
 
-/// Placeholder for the scheduler dispatch surface — returns 501 with a clear
-/// message so the UI can show what's coming without lying about behaviour.
-async fn dispatch_stub(
+#[derive(Deserialize)]
+struct LogsQuery {
+    #[serde(default)]
+    since: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct LogsView {
+    kind: String,
+    name: String,
+    total: usize,
+    entries: Vec<LogEntry>,
+}
+
+async fn get_logs(
+    State(state): State<AppState>,
     Path((kind, name)): Path<(String, String)>,
-) -> impl IntoResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        format!(
-            "Dispatch for {kind}/{name} is Phase 5. The reconciler + scheduler \
-             that turns 'desired' into 'running on agent X' isn't built yet.\n\n\
-             Today, applying a resource stores it in SQLite. When Phase 5 ships, \
-             this endpoint will publish orion.control.<node>.run to the chosen \
-             node and you'll see it appear via orion.service.register."
-        ),
-    )
+    Query(q): Query<LogsQuery>,
+) -> Json<LogsView> {
+    let since = q.since.unwrap_or(0);
+    let (entries, total) = state.logs.snapshot(&kind, &name, since);
+    Json(LogsView { kind, name, total, entries })
 }
 
 #[derive(Serialize)]
@@ -332,7 +521,7 @@ struct DeleteOutcome {
     deleted: bool,
 }
 
-// ----------------------------------------------------------- error mapping
+// ============================================================ error mapping
 
 struct ApiError {
     status: StatusCode,
@@ -345,6 +534,9 @@ impl ApiError {
     }
     fn not_found(msg: impl Into<String>) -> Self {
         Self { status: StatusCode::NOT_FOUND, message: msg.into() }
+    }
+    fn internal(msg: impl Into<String>) -> Self {
+        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: msg.into() }
     }
     fn store(e: orion_store::StoreError) -> Self {
         Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: e.to_string() }

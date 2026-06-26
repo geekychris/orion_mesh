@@ -220,6 +220,28 @@
     .bulk-step .fail { color: var(--err); }
     .bulk-step .pending { color: var(--muted); }
 
+    /* ---- live log viewer ---- */
+    .logs-panel { margin-top: 1rem; }
+    .logs-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: .25rem;
+    }
+    .logs-header h3 { margin: 0; font-size: .9rem; }
+    .logs-header .meta { color: var(--muted); font-size: .75rem; }
+    .logs-tail {
+      background: var(--code-bg); color: var(--code-fg);
+      padding: .75rem; border-radius: 4px;
+      max-height: 280px; overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: .78rem; line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    .log-row { display: grid; grid-template-columns: 5.5rem 4rem 1fr; gap: .5rem; }
+    .log-row .ts { color: #888; }
+    .log-row .stream { color: #6cc; }
+    .log-row .stream.err { color: #f88; }
+    .logs-empty { color: var(--muted); font-size: .8rem; padding: .5rem; }
+
     footer {
       margin-top: 2rem; padding: 1rem 1.5rem;
       color: var(--muted); font-size: .75rem;
@@ -361,6 +383,8 @@
     countsByKind: {},
     listByKind: {},
     selectedByKind: {},  // kind -> name of selected row
+    logSince: {},        // `${kind}/${name}` -> seq of last seen entry
+    logTimers: {},       // `${kind}/${name}` -> setInterval id (one per visible panel)
   };
 
   // ------------------------------------------------------------- API calls
@@ -393,7 +417,7 @@
       }));
       state.countsByKind = Object.fromEntries(counts);
 
-      render();
+      autoRender();
       clearErr();
       $("#refresh-clock").textContent = new Date().toLocaleTimeString();
     } catch (e) {
@@ -423,15 +447,29 @@
   }
 
   // ------------------------------------------------------------- render: views
+  // Called by user actions (tab click, row click, apply, delete, dispatch).
+  // Always wipes the current view and rebuilds it.
   function render() {
+    for (const id of Object.values(state.logTimers)) clearInterval(id);
+    state.logTimers = {};
     renderTabs();
     const v = $("#views");
     v.innerHTML = "";
-
     if (state.activeTab === "Nodes") v.append(viewNodes());
     else if (state.activeTab === "Apply") v.append(viewApply());
     else if (state.activeTab === "Demo") v.append(viewDemo());
     else v.append(viewKind(state.activeTab));
+  }
+
+  // Auto-poll: only refresh tab counts + the Nodes table. Don't disturb the
+  // detail panel or log poller on other tabs.
+  function autoRender() {
+    renderTabs();
+    if (state.activeTab === "Nodes") {
+      const v = $("#views");
+      v.innerHTML = "";
+      v.append(viewNodes());
+    }
   }
 
   function viewNodes() {
@@ -470,9 +508,11 @@
     if (isWorkload) {
       const note = el("div", { class: "phase-note" });
       note.innerHTML =
-        `<strong>Phase 1:</strong> Applying a ${kind} stores it. ` +
-        `The reconciler + scheduler that publishes <code>orion.control.&lt;node&gt;.run</code> ` +
-        `lands in Phase 5. The Dispatch button below is a stub that returns 501.`;
+        `<strong>Phase 2:</strong> Applying stores the ${kind}. ` +
+        `<strong>Dispatch</strong> publishes <code>orion.control.&lt;node&gt;.run</code> ` +
+        `to a live agent which launches the native runtime; stdout/stderr stream back ` +
+        `on <code>orion.logs.&lt;node&gt;</code> and appear in the Logs panel below. ` +
+        `The real scheduler (filtering + scoring + reconciliation) lands in Phase 5.`;
       wrap.append(note);
     }
 
@@ -510,12 +550,17 @@
       const header = el("div", { class: "detail-header" },
         el("h2", {}, `${kind} · ${selectedResource.metadata.name}`));
       const actions = el("div", { class: "actions" });
+      const dispatchMsg = el("span", { class: "small muted", style: "margin-left:.5rem" });
       if (isWorkload) {
-        const dispatch = el("button", { class: "action" }, "Dispatch (Phase 5)");
+        const dispatch = el("button", { class: "action primary" }, "Dispatch");
         dispatch.onclick = async () => {
+          dispatchMsg.textContent = "dispatching…";
           try {
-            await api(`/v1/dispatch/${kind}/${selectedResource.metadata.name}`, { method: "POST" });
-          } catch (e) { alert(String(e)); }
+            const out = await api(`/v1/dispatch/${kind}/${selectedResource.metadata.name}`, { method: "POST" });
+            dispatchMsg.textContent = `running on ${out.node} (instance ${out.instance_id.slice(0,8)}…)`;
+            // Reset the log baseline so we see fresh output.
+            state.logSince[`${kind}/${selectedResource.metadata.name}`] = 0;
+          } catch (e) { dispatchMsg.textContent = "✗ " + String(e); }
         };
         actions.append(dispatch);
       }
@@ -537,16 +582,70 @@
       };
       actions.append(delBtn);
       header.append(actions);
+      header.append(dispatchMsg);
       detailWrap.append(header);
 
       const pre = el("pre", { class: "yaml" });
       pre.innerHTML = colorizeYaml(jsonToYaml(selectedResource));
       detailWrap.append(pre);
+
+      if (isWorkload) {
+        detailWrap.append(makeLogsPanel(kind, selectedResource.metadata.name));
+      }
     }
     panel.append(detailWrap);
 
     wrap.append(panel);
     return wrap;
+  }
+
+  // ------------------------------------------------------------- live log viewer
+  function makeLogsPanel(kind, name) {
+    const key = `${kind}/${name}`;
+    const panel = el("div", { class: "logs-panel" });
+
+    const header = el("div", { class: "logs-header" });
+    header.append(el("h3", {}, "Logs"));
+    const meta = el("span", { class: "meta" }, "polling…");
+    header.append(meta);
+    panel.append(header);
+
+    const tail = el("div", { class: "logs-tail" });
+    tail.innerHTML = '<div class="logs-empty">no logs yet — Dispatch the workload to see its output</div>';
+    panel.append(tail);
+
+    // Stop any old timer for this key (re-render replaces the panel).
+    if (state.logTimers[key]) clearInterval(state.logTimers[key]);
+
+    let firstFetch = true;
+    const poll = async () => {
+      try {
+        const since = state.logSince[key] || 0;
+        const r = await api(`/v1/logs/${kind}/${name}?since=${since}`);
+        meta.textContent = `${r.total} line${r.total===1?'':'s'} · live`;
+        if (!r.entries.length && firstFetch && r.total === 0) {
+          // Keep the empty placeholder.
+        } else if (firstFetch || r.entries.length) {
+          if (firstFetch) tail.innerHTML = "";
+          for (const e of r.entries) {
+            const row = el("div", { class: "log-row" });
+            const ts = new Date(e.at).toLocaleTimeString(undefined, { hour12: false });
+            row.append(el("span", { class: "ts" }, ts));
+            row.append(el("span", { class: `stream${e.stream==='stderr'?' err':''}` }, e.stream));
+            row.append(el("span", {}, e.line));
+            tail.append(row);
+          }
+          state.logSince[key] = r.total;
+          tail.scrollTop = tail.scrollHeight;
+        }
+        firstFetch = false;
+      } catch (e) {
+        meta.textContent = "✗ " + String(e);
+      }
+    };
+    poll();
+    state.logTimers[key] = setInterval(poll, 2000);
+    return panel;
   }
 
   function summarize(kind, r) {

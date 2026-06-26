@@ -1,13 +1,15 @@
-use crate::{LaunchSpec, LaunchedInstance, RuntimeAdapter, RuntimeError};
+use crate::{LaunchSpec, LaunchedInstance, OutStream, RuntimeAdapter, RuntimeError};
 use async_trait::async_trait;
 use orion_types::Runtime;
 use std::collections::HashMap;
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use uuid::Uuid;
 
-/// Forks a binary as a child process. Plan-faithful Phase 2 runtime.
-/// Does NOT yet stream stdout/stderr to the bus — Phase 3 log forwarder.
+/// Forks a binary as a child process. When `LaunchSpec.log_sink` is `Some`,
+/// stdout/stderr are piped and forwarded line-by-line to the sink.
 pub struct NativeAdapter {
     children: Arc<Mutex<HashMap<Uuid, Child>>>,
 }
@@ -48,10 +50,24 @@ impl RuntimeAdapter for NativeAdapter {
         for (k, v) in env {
             cmd.env(k, v);
         }
-        let child = cmd
+        if spec.log_sink.is_some() {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        }
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| RuntimeError::Launch(format!("spawn {exec}: {e}")))?;
         let pid = child.id().map(|p| p.to_string()).unwrap_or_default();
+
+        if let Some(sink) = spec.log_sink {
+            if let Some(stdout) = child.stdout.take() {
+                tokio::spawn(forward_lines(spec.instance_id, OutStream::Stdout, stdout, sink.clone()));
+            }
+            if let Some(stderr) = child.stderr.take() {
+                tokio::spawn(forward_lines(spec.instance_id, OutStream::Stderr, stderr, sink));
+            }
+        }
+
         self.children.lock().unwrap().insert(spec.instance_id, child);
 
         Ok(LaunchedInstance {
@@ -70,6 +86,28 @@ impl RuntimeAdapter for NativeAdapter {
             .await
             .map_err(|e| RuntimeError::Stop(e.to_string()))?;
         Ok(())
+    }
+}
+
+async fn forward_lines<R>(
+    id: Uuid,
+    stream: OutStream,
+    reader: R,
+    sink: crate::LogSink,
+) where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let mut lines = BufReader::new(reader).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                if sink.send((id, stream, line)).is_err() {
+                    break; // sink dropped
+                }
+            }
+            Ok(None) => break,
+            Err(_) => break,
+        }
     }
 }
 
@@ -92,9 +130,10 @@ fn kind_str(r: &Runtime) -> &'static str {
 mod tests {
     use super::*;
     use orion_types::Runtime;
+    use tokio::sync::mpsc;
 
     #[tokio::test]
-    async fn native_adapter_launches_and_stops_true_binary() {
+    async fn native_adapter_launches_and_stops_sleep() {
         let adapter = NativeAdapter::new();
         let spec = LaunchSpec {
             instance_id: Uuid::new_v4(),
@@ -104,6 +143,7 @@ mod tests {
                 args: vec!["1".into()],
                 env: Default::default(),
             },
+            log_sink: None,
         };
         let id = spec.instance_id;
         let launched = adapter.launch(spec).await.expect("launch /bin/sleep");
@@ -123,8 +163,45 @@ mod tests {
                 env: Default::default(),
                 ports: vec![],
             },
+            log_sink: None,
         };
         let err = adapter.launch(spec).await.unwrap_err();
         assert!(matches!(err, RuntimeError::Mismatch { .. }));
+    }
+
+    #[tokio::test]
+    async fn native_adapter_captures_stdout_when_sink_provided() {
+        let adapter = NativeAdapter::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let id = Uuid::new_v4();
+        let spec = LaunchSpec {
+            instance_id: id,
+            name: "test".into(),
+            runtime: Runtime::Native {
+                exec: "/bin/sh".into(),
+                args: vec!["-c".into(), "printf 'hello\\nworld\\n'; printf 'oops\\n' 1>&2".into()],
+                env: Default::default(),
+            },
+            log_sink: Some(tx),
+        };
+        adapter.launch(spec).await.unwrap();
+
+        // Collect a few lines with a short timeout.
+        let mut lines = vec![];
+        for _ in 0..3 {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
+                Ok(Some(rec)) => lines.push(rec),
+                _ => break,
+            }
+        }
+        adapter.stop(id).await.ok();
+
+        // Should have one stdout "hello", one "world", one stderr "oops".
+        let stdout_lines: Vec<_> = lines.iter().filter(|(_, s, _)| *s == OutStream::Stdout).map(|(_, _, l)| l.as_str()).collect();
+        let stderr_lines: Vec<_> = lines.iter().filter(|(_, s, _)| *s == OutStream::Stderr).map(|(_, _, l)| l.as_str()).collect();
+        assert!(stdout_lines.contains(&"hello"), "stdout missing: got {:?}", lines);
+        assert!(stdout_lines.contains(&"world"), "stdout missing: got {:?}", lines);
+        assert!(stderr_lines.contains(&"oops"),  "stderr missing: got {:?}", lines);
+        assert!(lines.iter().all(|(rid, _, _)| *rid == id), "instance_id mismatch");
     }
 }
