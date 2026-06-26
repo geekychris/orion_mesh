@@ -6,23 +6,27 @@ Capability-aware orchestration for a heterogeneous personal cluster. Run the rig
 flowchart LR
     Install["**installation.md**<br/>get it built and running"]
     Usage["**usage.md**<br/>CLI, HTTP, YAML examples"]
+    Examples["**examples.md**<br/>annotated example tree<br/>+ runnable recipes"]
     Arch["**architecture.md**<br/>topology, NATS, storage, sequences"]
     Design["**design.md**<br/>why each choice was made"]
 
     Install --> Usage
-    Usage -.references.-> Arch
+    Usage --> Examples
+    Examples -.references.-> Arch
     Arch -.references.-> Design
 
-    style Install fill:#eef
-    style Usage  fill:#eef
-    style Arch   fill:#efe
-    style Design fill:#fee
+    style Install  fill:#eef
+    style Usage    fill:#eef
+    style Examples fill:#eef
+    style Arch     fill:#efe
+    style Design   fill:#fee
 ```
 
 | Doc | Start here when… |
 |---|---|
 | [installation.md](installation.md) | You want to build OrionMesh, configure auth, or run it as a system service |
 | [usage.md](usage.md) | You want to author resources, drive the CLI, or hit the HTTP API |
+| [examples.md](examples.md) | You want a guided tour of the `examples/` tree with copy-pasteable CLI recipes |
 | [architecture.md](architecture.md) | You're modifying the code or trying to understand how the pieces talk |
 | [design.md](design.md) | You're considering reversing a decision and want the trade-off recorded |
 
@@ -32,17 +36,32 @@ flowchart LR
 - Original short plan: [../OrionMesh_Architecture_Plan.md](../OrionMesh_Architecture_Plan.md)
 - Full plan (authoritative): [../OrionMesh_Complete_Plan.md](../OrionMesh_Complete_Plan.md)
 - Locked-in decisions index: [../CLAUDE.md](../CLAUDE.md)
+- Examples tree: [../examples/](../examples/)
 
 ## Status at a glance
 
 | | Phase 1 | Phase 2 | Phase 3 | Phase 4 | Phase 5 | Phase 6 | Phase 7 |
 |---|---|---|---|---|---|---|---|
-| Agent + heartbeats + CLI | ✅ | | | | | | |
-| Native task execution + log forwarder | substrate | 🚧 | | | | | |
-| Service registry + capability lookup | substrate | | 🚧 | | | | |
-| Docker runtime adapter | substrate | | | 🚧 | | | |
-| Reconciler + scheduler dispatch | substrate | | | | 🚧 | | |
-| Dev Portal peer integration | sketch live | | | | | 🚧 | |
-| HA / Telegram / MCP | | | | | | | 🚧 |
+| Agent + heartbeats + CLI                  | ✅ | | | | | | |
+| Native task execution + log forwarder      | ✅ | ✅ | | | | | |
+| `POST /v1/dispatch` + `GET /v1/logs` end-to-end | ✅ | ✅ | | | | | |
+| Cron scheduler tick (Schedule actually fires) | ✅ | ✅ | ✅ | | | | |
+| NATS IPC between Services (demo-pub / demo-sub) | ✅ | ✅ | ✅ | | | | |
+| Service registry + capability lookup (Find API) | substrate | | | 🚧 | | | |
+| Docker / Python / Java runtime adapters    | substrate | | | | 🚧 | | |
+| Reconciler + multi-node scheduler (filter+score) | substrate | | | | 🚧 | | |
+| Dev Portal peer integration                | sketch live | | | | | 🚧 | |
+| HA / Telegram / MCP                        | | | | | | | 🚧 |
 
-"substrate" = the shape exists, the loop doesn't.
+"substrate" = the shape (trait, types, in-mem index, NATS topic) exists; the closed loop doesn't.
+
+## What you can literally do today
+
+Open the UI at `http://127.0.0.1:7879` (after starting the local stack — see [installation.md §6](installation.md#6-local-dev--fastest-path)):
+
+- **Browse + edit + delete** every resource kind (Service, Task, Schedule, Dataset, Model, Runtime, Capability, …) — see [usage.md §3](usage.md#3-authoring-resources)
+- **Dispatch a Service or Task** with `runtime: native` — the agent launches it, stdout/stderr stream into the UI's Logs panel — [examples.md §01-services](examples.md#01-services), [§02-tasks](examples.md#02-tasks)
+- **Apply a Schedule** with `cron: "* * * * *"` — it fires within the next minute mark; the Cron observer panel shows `last_fired_at` / `next_fire_at` / `fire_count` — [examples.md §03-schedules](examples.md#03-schedules)
+- **IPC demo** — apply + dispatch the publisher + subscriber demo Services from the `Demo` tab; watch the same NATS-mediated messages in two side-by-side log tails — [examples.md §09-ipc](examples.md#09-ipc)
+- **Validate without storing** via `POST /v1/resources/apply?dry_run=1`
+- **Simulate** capability matching + placement filtering from the Demo tab without applying anything

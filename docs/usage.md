@@ -1,8 +1,8 @@
 # Usage
 
-How to actually use OrionMesh once it's installed. For setup see [installation.md](installation.md). For the system model see [architecture.md](architecture.md).
+How to actually use OrionMesh once it's installed. For setup see [installation.md](installation.md). For the system model see [architecture.md](architecture.md). For walking the example tree see [examples.md](examples.md).
 
-> **Phase 1 scope** — most of the resource model is parseable and persistable today, but only `Service` with a `native` runtime gets all the way to a launched process. Calling `orion apply` on the others stores the resource (and you can list it back) but the scheduler dispatch + non-native adapters land in later phases.
+> **What's live today.** The full resource model parses + persists; `Service` and `Task` with `runtime: native` **actually launch on an agent and stream stdout/stderr back through the bus**; `Schedule` resources fire on cron; two Services can talk to each other over the mesh's NATS broker (see [examples/09-ipc](../examples/09-ipc/)). The full reconciler + multi-node scheduler + non-native runtime adapters (Docker, Python, Java, …) land in Phase 4–5.
 
 ---
 
@@ -40,22 +40,22 @@ The CLI binary is `orion` (from the `orion-cli` crate).
 orion --help
 ```
 
-Today's commands:
+Today's `orion` CLI commands:
 
 | Command | What it does |
 |---|---|
 | `orion validate <file.yaml>` | Parse the file into a `Resource`, run semantic checks, print kind+name. No controller call. |
 | `orion get nodes` | `GET /v1/nodes` |
 
-Planned (Phase 1+):
+Most operator workflows hit the controller HTTP API directly with `curl` — apply, dispatch, logs, delete, schedule observe — see §5. The CLI grows to match in upcoming phases:
 
 | Command | Status |
 |---|---|
-| `orion apply -f <file>` | Phase 1, near-term (already supported as `POST /v1/resources/apply`) |
-| `orion get services / tasks / capabilities` | Phase 3 |
-| `orion delete -f <file>` | Phase 5 |
-| `orion logs service/<name>` | Phase 3 |
-| `orion run -f task.yaml` | Phase 3 |
+| `orion apply -f <file>` | live as `POST /v1/resources/apply` |
+| `orion delete <kind>/<name>` | live as `DELETE /v1/resources/{kind}/{name}` |
+| `orion dispatch <kind>/<name>` | live as `POST /v1/dispatch/{kind}/{name}` |
+| `orion logs <kind>/<name>` | live as `GET /v1/logs/{kind}/{name}` |
+| `orion get services / tasks / capabilities` | live as `GET /v1/resources/{Kind}` |
 | `orion find capability <cap> attr=value` | Phase 4 |
 
 ### Pointing the CLI at a remote controller
@@ -297,7 +297,7 @@ placement:
 
 Empty placement = matches anything.
 
-### 4.2 Soft preferences (scoring — Phase 5)
+### 4.2 Soft preferences (scoring — wired in Phase 5)
 
 ```yaml
 placement:
@@ -337,53 +337,75 @@ flowchart LR
 
 ## 5. HTTP API
 
-Bearer auth required unless `ORION_AUTH_DISABLED=1` was set on the controller.
+Bearer auth required unless `ORION_AUTH_DISABLED=1` was set on the controller. `/health` is intentionally outside the auth layer.
 
 | Method + path | What it does |
 |---|---|
-| `GET /health` | Liveness probe (outside auth layer) |
+| `GET /health` | Liveness probe (no auth) |
 | `GET /v1/nodes` | Observed node list — heartbeat + inventory |
+| `GET /v1/kinds` | All resource kinds (drives the UI's tab generator) |
 | `GET /v1/resources/<Kind>` | List all resources of that kind |
-| `POST /v1/resources/apply` | Upsert a single resource (YAML body) |
+| `GET /v1/resources/<Kind>/<name>` | Fetch one resource (404 if missing) |
+| `POST /v1/resources/apply[?dry_run=1]` | Upsert from YAML body. `?dry_run=1` parses + validates without storing. Accepts `1`/`true`/`yes`/`on`/bare. |
+| `DELETE /v1/resources/<Kind>/<name>` | Remove from store |
+| `POST /v1/dispatch/<Kind>/<name>` | Publish `orion.control.{node}.run` to a live node for the workload. Returns `{kind, name, node, instance_id}`. |
+| `GET /v1/logs/<Kind>/<name>[?since=N]` | Stream-friendly ring-buffer tail of the workload's stdout/stderr. Pass back the previous response's `total` as `since` for incremental polling. |
+| `GET /v1/schedules/observed` | Cron observer state per Schedule: `armed_at`, `last_fired_at`, `next_fire_at`, `fire_count`, `last_error`. |
 
-`GET /v1/resources/<Kind>/<name>`, `DELETE`, `POST /v1/find` come in Phase 3/4.
+Phase 4 adds `POST /v1/find` for capability lookup; Phase 5 will replace the heuristic "first observed node" inside `/v1/dispatch` with the real scheduler.
 
 ### 5.1 Examples
 
 ```bash
 TOKEN=$(cat ~/.config/orion/cluster.token)
 CTRL=http://controller.local:7878
+H=(-H "Authorization: Bearer $TOKEN")    # bash array — expands in curl
 
 # Health (no auth)
-curl $CTRL/health
+curl $CTRL/health                                # → ok
 
 # Nodes
-curl -H "Authorization: Bearer $TOKEN" $CTRL/v1/nodes
+curl "${H[@]}" $CTRL/v1/nodes | jq .
 
 # Apply a service
-curl -H "Authorization: Bearer $TOKEN" \
-     -X POST --data-binary @amiga-search.yaml \
-     $CTRL/v1/resources/apply
-# → {"kind":"Service","name":"amiga-search","generation":1}
+curl "${H[@]}" -X POST --data-binary @amiga-search.yaml $CTRL/v1/resources/apply
+# → {"kind":"Service","name":"amiga-search","generation":1,"dry_run":false}
 
-# Re-apply the same body — generation stays at 1
-curl -H "Authorization: Bearer $TOKEN" \
-     -X POST --data-binary @amiga-search.yaml \
-     $CTRL/v1/resources/apply
-# → {"kind":"Service","name":"amiga-search","generation":1}
+# Re-apply the same body — generation stays at 1 (idempotent)
+curl "${H[@]}" -X POST --data-binary @amiga-search.yaml $CTRL/v1/resources/apply
+# → {"kind":"Service","name":"amiga-search","generation":1,"dry_run":false}
+
+# Validate without storing
+curl "${H[@]}" -X POST 'amiga-search.yaml' $CTRL/v1/resources/apply?dry_run=1
+# → {"kind":"Service","name":"amiga-search","generation":0,"dry_run":true}
 
 # Change a field, re-apply — generation goes to 2
 sed -i '' 's/replicas: 1/replicas: 2/' amiga-search.yaml
-curl -H "Authorization: Bearer $TOKEN" \
-     -X POST --data-binary @amiga-search.yaml \
-     $CTRL/v1/resources/apply
-# → {"kind":"Service","name":"amiga-search","generation":2}
+curl "${H[@]}" -X POST --data-binary @amiga-search.yaml $CTRL/v1/resources/apply
+# → {"kind":"Service","name":"amiga-search","generation":2,"dry_run":false}
 
-# List Services
-curl -H "Authorization: Bearer $TOKEN" $CTRL/v1/resources/Service
+# List
+curl "${H[@]}" $CTRL/v1/resources/Service | jq .
+
+# Fetch one
+curl "${H[@]}" $CTRL/v1/resources/Service/amiga-search | jq .
+
+# Dispatch — publishes ControlRun to orion.control.{node}.run
+curl "${H[@]}" -X POST $CTRL/v1/dispatch/Service/amiga-search
+# → {"kind":"Service","name":"amiga-search","node":"demo-mac","instance_id":"…"}
+
+# Tail logs — pass `since=0` first; then echo back `total`
+curl "${H[@]}" "$CTRL/v1/logs/Service/amiga-search?since=0" | jq .
+# → { kind, name, total, entries: [ { at, node_id, stream, line }, … ] }
+
+# Delete
+curl "${H[@]}" -X DELETE $CTRL/v1/resources/Service/amiga-search
+
+# Schedule observer
+curl "${H[@]}" $CTRL/v1/schedules/observed | jq .
 ```
 
-### 5.2 What `apply` does today vs. tomorrow
+### 5.2 What `apply` + `dispatch` actually do
 
 ```mermaid
 sequenceDiagram
@@ -391,30 +413,35 @@ sequenceDiagram
     participant U as You
     participant C as orion-controller
     participant S as Store (SQLite)
-    participant SCH as Scheduler<br/>(Phase 5)
+    participant N as NATS
     participant A as orion-agent
 
     U->>C: POST /v1/resources/apply (YAML)
-    C->>C: parse + validate
+    C->>C: parse + Resource::validate()
     C->>S: upsert_resource
     S-->>C: generation
-
-    rect rgba(120,170,255,0.18)
-      note right of C: Today: stops here.<br/>Resource is stored, listed, queryable.
-    end
-
-    rect rgba(255,200,150,0.18)
-      note right of SCH: Phase 5 onward — not yet shipped.
-      C->>SCH: reconcile()
-      SCH->>S: list Services + Nodes
-      SCH-->>C: ranked candidates
-      C->>A: orion.control.{node}.run
-      A->>A: NativeAdapter.launch
-      A->>C: orion.service.register
-    end
-
     C-->>U: {kind, name, generation}
+
+    U->>C: POST /v1/dispatch/Service/<name>
+    C->>S: get_resource(kind, name)
+    S-->>C: Resource { runtime, … }
+    C->>C: pick a node (most-recent live)
+    C->>N: publish Envelope<ControlRun><br/>on orion.control.{node}.run
+    N->>A: deliver ControlRun
+    A->>A: instances.record(id → kind, name)
+    A->>A: NativeAdapter.launch (pipes stdout/stderr)
+    par stdout / stderr forwarding
+        A->>N: publish Envelope<LogLine><br/>on orion.logs.{node}
+        N->>C: deliver LogLine
+        C->>C: LogBuffer.push(kind, name, entry)
+    end
+    C-->>U: {kind, name, node, instance_id}
+
+    U->>C: GET /v1/logs/Service/<name>?since=N
+    C-->>U: { total, entries: [...] }
 ```
+
+Phase 5 replaces "pick a node (most-recent live)" with the real scheduler — filter by `placement`, score by `prefer:`, dispatch to the winner.
 
 ---
 
@@ -432,40 +459,144 @@ stateDiagram-v2
     Failed --> [*] : DELETE
 ```
 
-`status.phase` follows this state machine for Service and Task. Today only `Declared` is reachable for non-native runtimes.
+`status.phase` is wired but only `Declared` is automatically reachable today. Dispatched workloads do run; the per-resource `status.phase` getting updated by a reconciler is Phase 5.
 
 ---
 
-## 7. Worked example: native sleep service
+## 7. Worked recipes (end-to-end, runnable)
 
-A minimal end-to-end. Assumes you've followed [installation.md §6](installation.md#6-local-dev--fastest-path) for local dev.
+The runnable demos assume a local stack (`docker run … nats:2.10 -js`, `orion-controller` on `:7878`, `orion-agent`, `orion-ui` on `:7879`, `ORION_AUTH_DISABLED=1` on every process). See [installation.md §6](installation.md#6-local-dev--fastest-path).
 
 ```bash
-cat > /tmp/sleeper.yaml <<'EOF'
-apiVersion: orionmesh.dev/v1
+CTRL=http://127.0.0.1:7878
+```
+
+### 7.1 Recipe: a Service that prints, dispatched, logs in real time
+
+```bash
+# 1. Apply
+curl -X POST $CTRL/v1/resources/apply --data-binary @- <<'EOF'
 kind: Service
-metadata: { name: sleeper }
+metadata: { name: chatty }
 spec:
   runtime:
     kind: native
-    exec: /bin/sleep
-    args: ["3600"]
-  replicas: 1
-  restart_policy: always
+    exec: /bin/sh
+    args: ["-c", "for i in 1 2 3 4 5; do echo line-$i; sleep 1; done; echo done"]
 EOF
+# → {"kind":"Service","name":"chatty","generation":1,"dry_run":false}
 
-orion validate /tmp/sleeper.yaml
-# → ok: kind=Service name=sleeper
+# 2. Dispatch
+curl -X POST $CTRL/v1/dispatch/Service/chatty
+# → {"kind":"Service","name":"chatty","node":"demo-mac","instance_id":"…"}
 
-curl -X POST --data-binary @/tmp/sleeper.yaml \
-     http://127.0.0.1:7878/v1/resources/apply
-# → {"kind":"Service","name":"sleeper","generation":1}
+# 3. Tail the logs (poll every second for ~7s)
+for _ in 1 2 3 4 5 6 7; do
+  curl -s "$CTRL/v1/logs/Service/chatty" \
+    | python3 -c "import sys,json;d=json.load(sys.stdin);print('total='+str(d['total']))"
+  sleep 1
+done
 
-curl http://127.0.0.1:7878/v1/resources/Service
-# → [ {apiVersion, kind: Service, metadata: { name: sleeper }, spec: { ... } } ]
+# 4. Final read
+curl -s $CTRL/v1/logs/Service/chatty | python3 -m json.tool
 ```
 
-Once the scheduler ships (Phase 5), this same YAML will result in a `/bin/sleep 3600` process running on a chosen node.
+Sample output of the last command:
+
+```json
+{
+  "kind": "Service", "name": "chatty", "total": 6,
+  "entries": [
+    { "at": "2026-06-26T06:40:20Z", "node_id": "demo-mac", "stream": "stdout", "line": "line-1" },
+    { "at": "2026-06-26T06:40:21Z", "node_id": "demo-mac", "stream": "stdout", "line": "line-2" },
+    …
+    { "at": "2026-06-26T06:40:25Z", "node_id": "demo-mac", "stream": "stdout", "line": "done"   }
+  ]
+}
+```
+
+### 7.2 Recipe: a Schedule that fires every minute
+
+```bash
+# 1. Apply a Task
+curl -X POST $CTRL/v1/resources/apply --data-binary @- <<'EOF'
+kind: Task
+metadata: { name: cron-job }
+spec:
+  runtime:
+    kind: native
+    exec: /bin/sh
+    args: ["-c", "echo fired-at-$(date +%H:%M:%S)"]
+EOF
+
+# 2. Apply a Schedule pointing at it (5-field POSIX cron, every minute)
+curl -X POST $CTRL/v1/resources/apply --data-binary @- <<'EOF'
+kind: Schedule
+metadata: { name: every-min }
+spec:
+  cron: "* * * * *"
+  task: cron-job
+EOF
+
+# 3. Watch the cron observer
+watch -n 5 'curl -s $CTRL/v1/schedules/observed | python3 -m json.tool'
+```
+
+Within the next minute mark, `fire_count` will tick 0→1 and the Task will produce a `fired-at-HH:MM:SS` log line.
+
+```bash
+curl -s $CTRL/v1/logs/Task/cron-job | python3 -m json.tool
+```
+
+### 7.3 Recipe: two Services talking over the mesh's NATS broker
+
+(`orion-demo-pub`/`orion-demo-sub` come from `cargo build --release -p orion-demo-bins`.)
+
+```bash
+# 1. Apply the subscriber + publisher
+curl -X POST --data-binary @examples/09-ipc/demo-sub.yaml $CTRL/v1/resources/apply
+curl -X POST --data-binary @examples/09-ipc/demo-pub.yaml $CTRL/v1/resources/apply
+
+# 2. Dispatch sub FIRST so it's listening, then pub
+curl -X POST $CTRL/v1/dispatch/Service/demo-sub
+sleep 1
+curl -X POST $CTRL/v1/dispatch/Service/demo-pub
+
+# 3. Watch both — same timestamps end-to-end
+sleep 5
+echo "=== publisher stdout ==="
+curl -s $CTRL/v1/logs/Service/demo-pub | python3 -c "import sys,json;d=json.load(sys.stdin);[print(e['line']) for e in d['entries'][-6:]]"
+echo "=== subscriber stdout ==="
+curl -s $CTRL/v1/logs/Service/demo-sub | python3 -c "import sys,json;d=json.load(sys.stdin);[print(e['line']) for e in d['entries'][-6:]]"
+```
+
+```
+=== publisher stdout ===
+[demo-pub:P] sent: tick 1 from P at 06:51:51.060
+[demo-pub:P] sent: tick 2 from P at 06:51:52.061
+…
+=== subscriber stdout ===
+[demo-sub:S] recv: tick 1 from P at 06:51:51.060 (subject=orion.demo.ipc)
+[demo-sub:S] recv: tick 2 from P at 06:51:52.061 (subject=orion.demo.ipc)
+…
+```
+
+The mesh's own NATS broker is the IPC. Same millisecond timestamps on send + receive.
+
+### 7.4 Recipe: validate-only without storing
+
+```bash
+# Good YAML — returns dry_run:true, generation:0
+curl -X POST $CTRL/v1/resources/apply?dry_run=1 \
+  --data-binary @examples/08-canonical/amiga-search.yaml
+
+# Bad YAML — semantic error, no store mutation
+curl -X POST $CTRL/v1/resources/apply?dry_run=1 \
+  --data-binary @examples/bad/schedule-both.yaml
+# → validate: schedule must set exactly one of `task` or `taskTemplate`
+```
+
+`?dry_run=1`, `?dry_run=true`, `?dry_run=yes`, `?dry_run=on`, and the bare `?dry_run` (no value) are all accepted.
 
 ---
 

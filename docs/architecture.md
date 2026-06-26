@@ -374,39 +374,115 @@ sequenceDiagram
     C-->>U: {kind, name, generation}
 ```
 
-### 6.3 Scheduler dispatch (Phase 5 — planned)
+### 6.3 Direct dispatch + stdout/stderr capture (Phase A — live)
 
-This isn't implemented yet, but the substrate is in place. Shown so the agent's `control.run` subscriber has documented intent.
+`POST /v1/dispatch/{kind}/{name}` picks a node (currently "most-recent live"; full scheduler is Phase 5), publishes `ControlRun`, the agent launches via the runtime adapter, and stdout/stderr stream back to a ring buffer the UI tails.
 
 ```mermaid
 sequenceDiagram
     autonumber
+    participant U as User
     participant C as orion-controller
-    participant SC as orion-scheduler
-    participant S as Store
+    participant S as Store (SQLite)
     participant N as NATS
     participant A as orion-agent
+    participant W as Workload (forked process)
 
-    Note over C: Reconciler tick:<br/>compare desired (Store) vs<br/>observed (heartbeats/health)
+    U->>C: POST /v1/dispatch/Service/<name>
+    C->>S: get_resource(kind, name)
+    S-->>C: Resource { runtime, … }
+    C->>C: pick a node (most-recent live)
+    C->>N: publish Envelope<ControlRun><br/>on orion.control.{node}.run
+    N->>A: deliver ControlRun
+    A->>A: instances.record(id → (kind, name))
+    A->>W: NativeAdapter.launch — spawn /bin/sh -c …<br/>stdout/stderr piped
+    par stdout / stderr forwarder
+        W-->>A: (line, OutStream::Stdout)
+        A->>N: publish Envelope<LogLine><br/>on orion.logs.{node}
+        N->>C: deliver LogLine
+        C->>C: LogBuffer.push((kind, name), entry)
+    end
+    C-->>U: {kind, name, node, instance_id}
 
-    C->>S: list_by_kind("Service")
-    S-->>C: services + desired replicas
-    C->>S: list_nodes()<br/>(observed inventories)
-    S-->>C: candidate nodes
-    C->>SC: filter_nodes_by_placement(service.placement)
-    SC-->>C: matching nodes
-    C->>SC: score(nodes, prefer + capabilities)
-    SC-->>C: ranked nodes
-    C->>N: publish orion.control.{best_node}.run<br/>(Envelope<ControlRun>)
-    N->>A: deliver run
-    A->>A: registry.get(runtime.kind).launch(spec)
-    A->>N: publish orion.service.register
-    A->>N: publish orion.capabilities
-    N->>C: deliver register + capabilities
-    C->>S: persist observed state
+    U->>C: GET /v1/logs/{kind}/{name}?since=N
+    C-->>U: { total, entries[…] }
 ```
 
-### 6.4 Peer integration — Dev Portal registration
+Phase 5 replaces "pick a node (most-recent live)" with the real scheduler — `filter_nodes_by_placement` + scoring + capability index.
+
+### 6.4 Scheduler tick — Schedules firing on cron (Phase B — live)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant TICK as scheduler_tick_loop<br/>(every 5s)
+    participant S as Store
+    participant SR as ScheduleRegistry<br/>(in-memory)
+    participant DISP as dispatch_workload
+    participant N as NATS
+
+    TICK->>S: list_by_kind("Schedule")
+    S-->>TICK: schedules
+    loop each Schedule
+        TICK->>TICK: cron.parse (5-field auto-promoted to 6)
+        TICK->>SR: read armed_at + last_fired_at
+        TICK->>TICK: next = cron.after(after).next()
+        alt next ≤ now
+            TICK->>S: resolve task (lookup or inline template)
+            S-->>TICK: TaskSpec.runtime
+            TICK->>DISP: dispatch_workload(Task, name, runtime)
+            DISP->>N: publish ControlRun (same path as §6.3)
+            DISP-->>TICK: (node, instance_id)
+            TICK->>SR: last_fired_at = now<br/>fire_count += 1<br/>next_fire_at = cron.after(now).next()
+        else not yet
+            TICK->>SR: next_fire_at = next
+        end
+    end
+```
+
+Observable via `GET /v1/schedules/observed` — returns `armed_at`, `last_fired_at`, `last_instance_id`, `next_fire_at`, `fire_count`, `last_error` per Schedule.
+
+### 6.5 IPC over NATS — two Services talking (Phase C — live)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant C as orion-controller
+    participant N as NATS broker
+    participant Asub as orion-demo-sub<br/>(Service: demo-sub)
+    participant Apub as orion-demo-pub<br/>(Service: demo-pub)
+
+    U->>C: apply + dispatch demo-sub
+    C->>Asub: ControlRun via §6.3
+    Asub->>N: subscribe "orion.demo.ipc"
+
+    U->>C: apply + dispatch demo-pub
+    C->>Apub: ControlRun via §6.3
+
+    loop every 1s
+        Apub->>N: publish "tick N from P at HH:MM:SS.mmm"<br/>on orion.demo.ipc
+        N->>Asub: deliver
+        Asub->>Asub: stdout: "recv: tick N …"
+        par log forwarder
+            Asub->>N: Envelope<LogLine> on orion.logs.{node}
+            N->>C: deliver
+        end
+        Apub->>Apub: stdout: "sent: tick N …"
+        par log forwarder
+            Apub->>N: Envelope<LogLine> on orion.logs.{node}
+            N->>C: deliver
+        end
+    end
+
+    U->>C: GET /v1/logs/Service/demo-pub
+    U->>C: GET /v1/logs/Service/demo-sub
+    Note over U,C: Same timestamps in both:<br/>the mesh's own broker carried the messages.
+```
+
+The IPC subject is **distinct from the control plane subjects** — workloads share NATS with the mesh but the namespaces don't overlap.
+
+### 6.6 Peer integration — Dev Portal registration
 
 ```mermaid
 sequenceDiagram
@@ -460,8 +536,9 @@ flowchart TD
 
 ## 8. What's not in this document
 
-- **Reconciler internals** — Phase 5 design. Will be added when the scheduler ships.
-- **Find API** — Phase 4. Will get its own sequence diagram.
+- **Reconciler internals** — Phase 5. Today dispatch is operator-initiated (via `POST /v1/dispatch/...` or the scheduler tick); the closed loop where the controller compares desired vs observed and decides to dispatch on its own is the next layer.
+- **Full scheduler** — Phase 5. Today's pick-a-node logic is "most-recent live"; the filter+score+place pipeline ships with the reconciler.
+- **Find API** — Phase 4. The capability index exists in [`crates/orion-types/src/capability.rs`](../crates/orion-types/src/capability.rs); the `POST /v1/find` endpoint lights it up.
 - **Federation across sites** — out of MVP scope (mentioned in plan future ideas).
 - **MCP server tools** — `orion-mcp` is a stub; the tool surface lands in Phase 7.
 
