@@ -1,0 +1,13 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata: { name: vllm-32b }
+spec:
+  runtime:
+    kind: llm
+    model: qwen-coder
+    backend: vllm
+  replicas: 1
+  placement:
+    gpu: { vendor: nvidia, min_vram_gb: 24 }
+    acceleration: cuda
+    os: [linux]

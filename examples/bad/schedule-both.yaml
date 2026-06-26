@@ -1,0 +1,8 @@
+apiVersion: orionmesh.dev/v1
+kind: Schedule
+metadata: { name: ambiguous-nightly }
+spec:
+  cron: "0 2 * * *"
+  task: train                       # ← ambiguous: …
+  task_template:                    # ← …both are set
+    runtime: { kind: native, exec: /bin/true }

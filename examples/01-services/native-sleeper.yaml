@@ -1,0 +1,12 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: sleeper
+  labels: { tier: demo }
+spec:
+  runtime:
+    kind: native
+    exec: /bin/sleep
+    args: ["3600"]
+  replicas: 1
+  restart_policy: always

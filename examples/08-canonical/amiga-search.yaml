@@ -1,0 +1,21 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: amiga-search
+  labels: { site: belmont }
+spec:
+  runtime:
+    kind: docker
+    image: amiga-search:latest
+  replicas: 1
+  placement:
+    arch: [arm64, x86_64]
+    os: [linux]
+  requires:
+    search:
+      dataset: amiga_schematics
+  capabilities:
+    - name: search
+      attributes:
+        dataset: amiga_schematics
+        protocol: http

@@ -1,0 +1,23 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: ledger-daemon
+  annotations:
+    description: "Long-running ledger sync; health probe runs a hand-rolled check script"
+spec:
+  runtime:
+    kind: native
+    exec: /usr/local/bin/ledgerd
+    args: ["--mode=sync"]
+    env:
+      LEDGER_DB: /var/lib/ledger/db
+      RUST_LOG: info
+  replicas: 1
+  health:
+    kind: exec
+    command: ["/usr/local/bin/ledgerd-healthcheck", "--quiet"]
+    interval_seconds: 15
+    failure_threshold: 2
+  restart_policy: on_failure
+  placement:
+    os: [linux]

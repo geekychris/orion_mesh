@@ -1,0 +1,7 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata: { name: nonsense }
+spec:
+  runtime:
+    kind: zigzag                    # ← not a real runtime
+    exec: /bin/true

@@ -1,0 +1,10 @@
+apiVersion: orionmesh.dev/v1
+kind: Task
+metadata: { name: long-context-summarize }
+spec:
+  runtime: { kind: llm, model: qwen-coder, backend: "llama.cpp" }
+  requires:
+    llm:
+      gpu:
+        min_vram_gb: { gte: 24 }     # Op — numeric comparison
+      context_window: { gte: 16000 } # Op

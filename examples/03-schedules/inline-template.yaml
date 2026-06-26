@@ -1,0 +1,19 @@
+apiVersion: orionmesh.dev/v1
+kind: Schedule
+metadata:
+  name: weekly-rollup
+  annotations:
+    description: "Inline form: the entire task spec is defined here, no separate Task resource"
+spec:
+  cron: "0 3 * * 0"               # Sunday 03:00
+  task_template:
+    runtime:
+      kind: java
+      jar: /opt/orion-rollup/weekly-runner.jar
+    placement:
+      arch: [x86_64]
+      os: [linux]
+    timeout_seconds: 14400
+    retry:
+      max_attempts: 2
+      backoff_seconds: 600

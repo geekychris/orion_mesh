@@ -1,0 +1,12 @@
+apiVersion: orionmesh.dev/v1
+kind: Dataset
+metadata: { name: amiga-schematics }
+spec:
+  description: "Repair-shop quality scans of Amiga 500 / 1200 / CD32 motherboard schematics"
+  locations:
+    - { node: pi5,          path: /data/amiga,                  access: ro }
+    - { node: mac-studio,   path: /Volumes/data/amiga,          access: rw }
+    - { node: nas-belmont,  path: /export/datasets/amiga,       access: ro }
+  formats: [pdf, png, gerber]
+  capabilities: [search, view]
+  size_bytes: 12345678901

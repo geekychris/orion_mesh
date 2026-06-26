@@ -1,0 +1,9 @@
+apiVersion: orionmesh.dev/v1
+kind: Runtime
+metadata: { name: devportal-local }
+spec:
+  runtime_kind: devportal
+  base_url: "http://127.0.0.1:8081"
+  admin_ui_url: "http://127.0.0.1:5173"
+  config:
+    description: "Dev Portal (DevHub Pro) — asset catalog + builds + MCP server"

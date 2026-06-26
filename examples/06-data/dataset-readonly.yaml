@@ -1,0 +1,10 @@
+apiVersion: orionmesh.dev/v1
+kind: Dataset
+metadata: { name: code-corpus }
+spec:
+  description: "Curated code corpus for fine-tuning"
+  locations:
+    - { node: gpu-rig, path: /data/code-corpus, access: ro }
+  formats: [jsonl, parquet]
+  capabilities: [embeddings, training]
+  size_bytes: 9876543210

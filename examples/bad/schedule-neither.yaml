@@ -1,0 +1,6 @@
+apiVersion: orionmesh.dev/v1
+kind: Schedule
+metadata: { name: empty-nightly }
+spec:
+  cron: "0 2 * * *"
+  # ← missing both task and task_template

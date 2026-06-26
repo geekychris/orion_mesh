@@ -1,0 +1,11 @@
+apiVersion: orionmesh.dev/v1
+kind: Model
+metadata: { name: qwen-coder }
+spec:
+  model_id: qwen2.5-coder-32b
+  description: "Qwen 2.5 Coder, 32B parameters — three quantizations for three node profiles"
+  variants:
+    - { format: gguf, quant: q4_k_m, memory_gb: 22.0, context_window: 32768, preferred_runtime: "llama.cpp" }
+    - { format: gguf, quant: q8_0,   memory_gb: 36.0, context_window: 32768, preferred_runtime: "llama.cpp" }
+    - { format: mlx,  quant: int8,   memory_gb: 36.0, context_window: 32768, preferred_runtime: mlx }
+  served_by: [mac-studio, gpu-rig]

@@ -1,0 +1,8 @@
+apiVersion: orionmesh.dev/v1
+kind: Model
+metadata: { name: llama3-8b }
+spec:
+  model_id: llama-3.1-8b-instruct
+  variants:
+    - { format: gguf, quant: q4_k_m, memory_gb: 6.0, context_window: 8192, preferred_runtime: "llama.cpp" }
+  served_by: [pi5]

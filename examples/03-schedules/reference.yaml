@@ -1,0 +1,7 @@
+apiVersion: orionmesh.dev/v1
+kind: Schedule
+metadata:
+  name: nightly-postgres-snapshot
+spec:
+  cron: "0 2 * * *"
+  task: postgres-snapshot          # references examples/02-tasks/native-snapshot.yaml

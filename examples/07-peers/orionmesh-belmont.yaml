@@ -1,0 +1,10 @@
+apiVersion: orionmesh.dev/v1
+kind: Runtime
+metadata: { name: orionmesh-belmont }
+spec:
+  runtime_kind: orionmesh
+  base_url: "http://controller.belmont.local:7878"
+  admin_ui_url: "http://controller.belmont.local:7879"
+  config:
+    natsUrl: "nats://nats.belmont.local:4222"
+    description: "Sister mesh in the Belmont rack — same model, separate state"

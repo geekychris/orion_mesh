@@ -1,0 +1,17 @@
+apiVersion: orionmesh.dev/v1
+kind: Task
+metadata:
+  name: postgres-snapshot
+  annotations:
+    description: "Driven by 03-schedules/reference.yaml on a cron"
+spec:
+  runtime:
+    kind: native
+    exec: /usr/local/bin/pg_dump
+    args: ["-Fc", "-f", "/var/backups/orion.dump", "orion"]
+    env:
+      PGHOST: 127.0.0.1
+      PGUSER: backup
+  timeout_seconds: 1800
+  retry:
+    max_attempts: 1

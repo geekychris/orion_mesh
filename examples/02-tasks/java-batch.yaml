@@ -1,0 +1,17 @@
+apiVersion: orionmesh.dev/v1
+kind: Task
+metadata:
+  name: nightly-rollup
+spec:
+  runtime:
+    kind: java
+    jar: /opt/orion-rollup/rollup-runner.jar
+    args: ["--config", "/etc/rollup/config.toml"]
+  placement:
+    arch: [x86_64]
+    os: [linux]
+    node_labels: { tier: batch }
+  timeout_seconds: 10800          # 3 hours
+  retry:
+    max_attempts: 2
+    backoff_seconds: 300

@@ -1,0 +1,33 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: belmont-llm-frontend
+  labels: { site: belmont, tier: ai }
+spec:
+  runtime:
+    kind: docker
+    image: ghcr.io/geekychris/llm-frontend:latest
+  replicas: 1
+  placement:
+    arch: [x86_64]
+    os: [linux]
+    gpu: { vendor: nvidia, min_vram_gb: 16 }
+    acceleration: cuda
+    node_labels:
+      site: belmont
+    prefer:
+      node_labels: { power: mains }
+      data_locality: true
+  capabilities:
+    - name: llm
+      attributes:
+        model: qwen-coder
+        protocol: openai-compat
+        max_concurrent: 4
+  ports:
+    - { name: http, port: 8080 }
+  health:
+    kind: http
+    path: /healthz
+    port: 8080
+  restart_policy: always

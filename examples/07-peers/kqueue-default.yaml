@@ -1,0 +1,11 @@
+apiVersion: orionmesh.dev/v1
+kind: Runtime
+metadata: { name: kqueue-default }
+spec:
+  runtime_kind: kqueue
+  base_url: "http://kqueue.local:8080"
+  admin_ui_url: "http://kqueue.local:8080/ui"
+  config:
+    natsUrl: "nats://nats.local:4222"
+    jetstreamPrefix: "kq."
+    description: "KQueue Go workers — NATS JetStream + sidecar + autoscaler"

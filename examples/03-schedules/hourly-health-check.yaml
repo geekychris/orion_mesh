@@ -1,0 +1,10 @@
+apiVersion: orionmesh.dev/v1
+kind: Schedule
+metadata: { name: hourly-fleet-ping }
+spec:
+  cron: "0 * * * *"
+  task_template:
+    runtime:
+      kind: native
+      exec: /usr/local/bin/orion-fleet-ping
+    timeout_seconds: 60

@@ -1,0 +1,10 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata: { name: belmont-mqtt-bridge }
+spec:
+  runtime:
+    kind: docker
+    image: eclipse-mosquitto:2
+  placement:
+    node_labels:
+      site: belmont

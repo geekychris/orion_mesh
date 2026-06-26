@@ -1,0 +1,6 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata: { name: lazy-policy }
+spec:
+  runtime: { kind: native, exec: /bin/sleep, args: ["3600"] }
+  restart_policy: maybe             # ← must be always | on_failure | never

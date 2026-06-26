@@ -1,0 +1,13 @@
+apiVersion: orionmesh.dev/v1
+kind: Capability
+metadata: { name: search }
+spec:
+  capability: search
+  description: "Full-text or vector lookup over a dataset"
+  attribute_schema:
+    type: object
+    properties:
+      dataset:    { type: string }
+      protocol:   { type: string, enum: [http, grpc] }
+      index_type: { type: string, enum: [lucene, tantivy, hnsw] }
+      format:     { type: array, items: { type: string } }

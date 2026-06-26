@@ -1,0 +1,7 @@
+apiVersion: orionmesh.dev/v1
+kind: Volume
+metadata: { name: shared-scratch }
+spec:
+  path: /mnt/scratch
+  mounted_on: [pi5, mac-studio, gpu-rig]
+  size_gb: 500

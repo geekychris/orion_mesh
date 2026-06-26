@@ -1,0 +1,50 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: amiga-search
+  namespace: portfolio
+  labels:
+    site: belmont
+    tier: archive
+  annotations:
+    description: "Lucene-backed search over the Amiga schematics dataset"
+    repo: "https://github.com/geekychris/amiga_knowledge"
+spec:
+  runtime:
+    kind: docker
+    image: ghcr.io/geekychris/amiga-search:latest
+    env:
+      LUCENE_INDEX_PATH: /data/index
+      AMIGA_SCHEMATICS_PATH: /data/amiga
+    ports: [8080, 9090]
+  replicas: 1
+  placement:
+    arch: [arm64, x86_64]
+    os: [linux]
+    node_labels: { site: belmont }
+    prefer:
+      data_locality: true
+  requires:
+    search:
+      dataset: amiga_schematics
+  capabilities:
+    - name: search
+      attributes:
+        dataset: amiga_schematics
+        protocol: http
+        index_type: lucene
+        format: [pdf, png]
+    - name: web
+      attributes:
+        protocol: http
+        path: /
+  ports:
+    - { name: http, port: 8080 }
+    - { name: metrics, port: 9090 }
+  health:
+    kind: http
+    path: /healthz
+    port: 8080
+    interval_seconds: 10
+    failure_threshold: 3
+  restart_policy: on_failure

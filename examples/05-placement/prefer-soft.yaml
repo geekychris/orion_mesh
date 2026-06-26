@@ -1,0 +1,12 @@
+apiVersion: orionmesh.dev/v1
+kind: Task
+metadata: { name: batch-prefer-mains }
+spec:
+  runtime: { kind: native, exec: /usr/local/bin/batch-runner }
+  placement:
+    arch: [arm64, x86_64]              # hard: any of these
+    prefer:
+      node_labels:
+        power: mains                    # soft: bonus points for mains power
+      data_locality: true               # soft: bonus for nodes that hold a required dataset
+  timeout_seconds: 3600

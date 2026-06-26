@@ -1,0 +1,4 @@
+apiVersion: orionmesh.dev/v1
+kind: Slartibartfast                # ← not a valid resource kind
+metadata: { name: cricket-fjord }
+spec: {}

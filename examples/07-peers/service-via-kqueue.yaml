@@ -1,0 +1,9 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata: { name: ingest-worker }
+spec:
+  runtime:
+    kind: peer
+    system: kqueue-default        # references examples/07-peers/kqueue-default.yaml
+    ref: image-ingest             # the queue name on KQueue's side
+  replicas: 1

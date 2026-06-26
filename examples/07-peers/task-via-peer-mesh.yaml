@@ -1,0 +1,9 @@
+apiVersion: orionmesh.dev/v1
+kind: Task
+metadata: { name: belmont-nightly-rollup }
+spec:
+  runtime:
+    kind: peer
+    system: orionmesh-belmont     # references examples/07-peers/orionmesh-belmont.yaml
+    ref: nightly-rollup           # name of the Task on the peer's side
+  timeout_seconds: 10800

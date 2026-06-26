@@ -1,0 +1,9 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata: { name: search-frontend-strict }
+spec:
+  runtime: { kind: docker, image: search-frontend:latest }
+  requires:
+    search:
+      dataset: amiga_schematics      # Equals — bare scalar
+      protocol: http                 # Equals

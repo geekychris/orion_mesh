@@ -1,0 +1,25 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: web-frontend
+  labels: { tier: edge }
+spec:
+  runtime:
+    kind: docker
+    image: nginx:1.27-alpine
+    env:
+      NGINX_HOST: example.local
+  replicas: 2
+  ports:
+    - { name: http, port: 80 }
+    - { name: metrics, port: 9113 }
+  health:
+    kind: http
+    path: /
+    port: 80
+    interval_seconds: 5
+    failure_threshold: 3
+  restart_policy: on_failure
+  placement:
+    arch: [arm64, x86_64]
+    os: [linux]

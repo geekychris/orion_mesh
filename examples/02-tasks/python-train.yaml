@@ -1,0 +1,23 @@
+apiVersion: orionmesh.dev/v1
+kind: Task
+metadata:
+  name: train-qwen-lora
+  labels: { workload: training }
+spec:
+  runtime:
+    kind: python
+    module: train_qwen
+    venv: /opt/venvs/qwen-trainer
+    args: ["--epochs", "3", "--rank", "16"]
+  placement:
+    gpu: { vendor: nvidia, min_vram_gb: 24 }
+    acceleration: cuda
+    os: [linux]
+  requires:
+    dataset:
+      name: code-corpus
+  prefer_data_locality: true
+  timeout_seconds: 14400          # 4 hours
+  retry:
+    max_attempts: 3
+    backoff_seconds: 60

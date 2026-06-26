@@ -1,0 +1,10 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata: { name: pi-sensor-collector }
+spec:
+  runtime:
+    kind: docker
+    image: ghcr.io/geekychris/sensor-collector:latest
+  placement:
+    arch: [arm64]               # Pi-only
+    os: [linux]
