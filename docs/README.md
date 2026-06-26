@@ -32,6 +32,7 @@ flowchart LR
 | [usage.md](usage.md) | You want to author resources, drive the CLI, or hit the HTTP API |
 | [examples.md](examples.md) | You want a guided tour of the `examples/` tree with copy-pasteable CLI recipes |
 | [skills.md](skills.md) | You want Claude (or scripts) to drive OrionMesh for you — apply, dispatch, schedule, tail logs |
+| [ipc.md](ipc.md) | You want to know how Services talk to each other, what `replicas:` does, fan-out vs queue-group vs JetStream, and how the polyglot demos work |
 | [architecture.md](architecture.md) | You're modifying the code or trying to understand how the pieces talk |
 | [design.md](design.md) | You're considering reversing a decision and want the trade-off recorded |
 
