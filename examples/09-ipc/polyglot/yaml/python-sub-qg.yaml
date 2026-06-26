@@ -1,0 +1,22 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: python-sub-qg
+  labels: { tier: demo, lang: python, role: consumer }
+  annotations:
+    description: |
+      Two Python subscribers in a queue group "ipc-workers".
+      Together with java-sub-qg or demo-sub-workers, they all share the load.
+spec:
+  runtime:
+    kind: native
+    exec: examples/09-ipc/polyglot/python/.venv/bin/python3
+    args:
+      - examples/09-ipc/polyglot/python/sub.py
+      - --subject
+      - orion.demo.ipc
+      - --queue-group
+      - ipc-workers
+    env: { NATS_URL: "nats://127.0.0.1:4222" }
+  replicas: 2
+  restart_policy: on_failure

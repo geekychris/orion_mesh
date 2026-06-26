@@ -1,0 +1,21 @@
+# Interop showcase — apply the three Service YAMLs below + ONE publisher
+# (any language). All consumers share the queue group "ipc-workers":
+#
+#   examples/09-ipc/queue-group-3-workers.yaml         (3 Rust workers)
+#   examples/09-ipc/polyglot/yaml/java-sub-qg.yaml      (2 Java workers)
+#   examples/09-ipc/polyglot/yaml/python-sub-qg.yaml    (2 Python workers)
+#
+# = 7 worker processes across 3 languages, all sharing one NATS queue group.
+# Each message goes to EXACTLY ONE worker. With a 1-second publish interval,
+# you'll see roughly N/7 messages on each replica's stdout over time.
+#
+# This file is intentionally a comments-only stub — apply the three real YAMLs
+# above directly.
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: interop-readme-only
+  annotations:
+    description: "Comments-only — see file body"
+spec:
+  runtime: { kind: native, exec: /bin/true }

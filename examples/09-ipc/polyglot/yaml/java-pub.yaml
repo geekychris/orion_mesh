@@ -1,0 +1,21 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: java-pub
+  labels: { tier: demo, lang: java, role: producer }
+  annotations:
+    description: |
+      Java publisher (NATS jnats client). Setup: bash examples/09-ipc/polyglot/java/setup.sh
+spec:
+  runtime:
+    kind: native
+    exec: java
+    args:
+      - -jar
+      - examples/09-ipc/polyglot/java/target/orion-demo-pub.jar
+      - --subject
+      - orion.demo.ipc
+      - --interval
+      - "1.0"
+    env: { NATS_URL: "nats://127.0.0.1:4222" }
+  restart_policy: on_failure

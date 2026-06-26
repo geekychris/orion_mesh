@@ -1,0 +1,24 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: java-sub-qg
+  labels: { tier: demo, lang: java, role: consumer }
+  annotations:
+    description: |
+      Two Java subscribers in queue group "ipc-workers". Together with
+      python-sub-qg / demo-sub-workers, they all share one load-balanced pool
+      across THREE languages.
+spec:
+  runtime:
+    kind: native
+    exec: java
+    args:
+      - -jar
+      - examples/09-ipc/polyglot/java/target/orion-demo-sub.jar
+      - --subject
+      - orion.demo.ipc
+      - --queue-group
+      - ipc-workers
+    env: { NATS_URL: "nats://127.0.0.1:4222" }
+  replicas: 2
+  restart_policy: on_failure

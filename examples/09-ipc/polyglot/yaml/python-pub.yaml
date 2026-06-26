@@ -1,0 +1,20 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: python-pub
+  labels: { tier: demo, lang: python, role: producer }
+  annotations:
+    description: |
+      Python publisher (nats-py). Setup: bash examples/09-ipc/polyglot/python/setup.sh
+spec:
+  runtime:
+    kind: native
+    exec: examples/09-ipc/polyglot/python/.venv/bin/python3
+    args:
+      - examples/09-ipc/polyglot/python/pub.py
+      - --subject
+      - orion.demo.ipc
+      - --interval
+      - "1.0"
+    env: { NATS_URL: "nats://127.0.0.1:4222" }
+  restart_policy: on_failure
