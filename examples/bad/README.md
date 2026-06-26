@@ -10,9 +10,7 @@ YAMLs that **intentionally fail** validation. Useful for confirming `orion valid
 | [unknown-runtime.yaml](unknown-runtime.yaml) | `runtime.kind: zigzag` — not a valid runtime kind |
 | [bad-restart-policy.yaml](bad-restart-policy.yaml) | `restart_policy: maybe` — not a valid policy |
 
-> **Runnable.** `scripts/run-md.py examples/bad/README.md` runs every block.
-> Each `orion validate` call here is **expected to exit non-zero** — the
-> `{allow_fail}` flag tells the runner to not fail-fast.
+> **Runnable.** `scripts/run-md.py examples/bad/README.md` walks every recipe in this README end-to-end (with a `{teardown}` step at the end). See [`../docs/runner.md`](../docs/runner.md) for the tag conventions (`{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`) and the drive flags (`--list`, `--only X`, `--dry-run`, `--interactive`).
 
 ## Build the CLI (one-time)
 

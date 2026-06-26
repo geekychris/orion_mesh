@@ -2,7 +2,7 @@
 
 The OrionMesh differentiator. Workloads constrain placement on **what services can do** (their advertised capabilities), not just on names. A capability is `{ name, attributes }` where attributes are nested JSON; the matcher dispatches on JSON shape into three forms — `Equals`, `OneOf`, and `Op` — so you can express "any LLM service with ≥ 24 GB VRAM serving the qwen-coder model" without a custom DSL.
 
-> **Runnable.** `scripts/run-md.py examples/04-capabilities/README.md` walks the recipes end-to-end. Tags: `{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`.
+> **Runnable.** `scripts/run-md.py examples/04-capabilities/README.md` walks every recipe in this README end-to-end (with a `{teardown}` step at the end). See [`../docs/runner.md`](../docs/runner.md) for the tag conventions (`{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`) and the drive flags (`--list`, `--only X`, `--dry-run`, `--interactive`).
 
 ## Concept
 

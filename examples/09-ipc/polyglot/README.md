@@ -22,10 +22,7 @@ All three implementations honour the same flags:
 | `--label` | Logical name in stdout. Defaults to `r$ORION_REPLICA_INDEX` if the agent set that env, else the language tag (`py` / `java`). |
 | `--interval` *(pub only)* | Seconds between messages. Default `1.0`. |
 
-> **Runnable.** `scripts/run-md.py examples/09-ipc/polyglot/README.md`
-> runs the `setup` + `interop` recipes end-to-end and tears down. The
-> Terminal-1/Terminal-2 block below is `{skip}` because it expects two
-> separate shells.
+> **Runnable.** `scripts/run-md.py examples/09-ipc/polyglot/README.md` walks every recipe in this README end-to-end (with a `{teardown}` step at the end). See [`../../docs/runner.md`](../../docs/runner.md) for the tag conventions (`{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`) and the drive flags (`--list`, `--only X`, `--dry-run`, `--interactive`).
 
 ## Setup
 

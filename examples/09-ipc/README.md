@@ -11,10 +11,7 @@ Two trivial Services that talk to each other via the same NATS broker the mesh u
 | [jetstream/](jetstream/) | Persistent + at-least-once + replayable subdir |
 | [polyglot/](polyglot/) | Python + Java + Rust pub/sub, all on the same wire |
 
-> **Runnable.** Every `bash` block below executes when you run
-> `scripts/run-md.py examples/09-ipc/README.md`. Blocks tagged `{skip}` are
-> for illustration only; blocks named via `{name=…}` can be cherry-picked
-> with `--only`.
+> **Runnable.** `scripts/run-md.py examples/09-ipc/README.md` walks every recipe in this README end-to-end (with a `{teardown}` step at the end). See [`../docs/runner.md`](../docs/runner.md) for the tag conventions (`{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`) and the drive flags (`--list`, `--only X`, `--dry-run`, `--interactive`).
 
 ## Build the demo binaries (one-time)
 

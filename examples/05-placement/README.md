@@ -2,7 +2,7 @@
 
 `placement:` is the **hardware-and-labels** axis the scheduler filters and scores on. Hard constraints (`arch`, `os`, `gpu`, `acceleration`, `node_labels`) decide which nodes are *eligible*; soft preferences in the `prefer:` block decide which of the survivors is *best*. The other axis — what services can do — is in [04-capabilities](../04-capabilities/).
 
-> **Runnable.** `scripts/run-md.py examples/05-placement/README.md` walks the recipes end-to-end. Tags: `{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`.
+> **Runnable.** `scripts/run-md.py examples/05-placement/README.md` walks every recipe in this README end-to-end (with a `{teardown}` step at the end). See [`../docs/runner.md`](../docs/runner.md) for the tag conventions (`{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`) and the drive flags (`--list`, `--only X`, `--dry-run`, `--interactive`).
 
 ## Concept
 

@@ -2,7 +2,7 @@
 
 A **Service** in OrionMesh is a long-running workload — a daemon, an HTTP server, a queue worker, a message bus subscriber. The controller treats it as desired state: "keep N replicas of this alive". Unlike a [Task](../02-tasks/), a Service doesn't have a defined exit; you stop it explicitly when you don't want it any more.
 
-> **Runnable.** `scripts/run-md.py examples/01-services/README.md` walks every recipe in this file end-to-end and tears down at the end. Use `--list` to preview, `--only NAME` to pick one, `--interactive` to step through. Info-string tags: `{name=X}` names a block, `{skip}` skips it, `{allow_fail}` lets it exit non-zero without stopping, `{teardown}` runs at the end. See [`scripts/run-md.py`](../../scripts/run-md.py).
+> **Runnable.** `scripts/run-md.py examples/01-services/README.md` walks every recipe in this README end-to-end (with a `{teardown}` step at the end). See [`../docs/runner.md`](../docs/runner.md) for the tag conventions (`{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`) and the drive flags (`--list`, `--only X`, `--dry-run`, `--interactive`).
 
 ## Concept
 

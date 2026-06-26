@@ -2,7 +2,7 @@
 
 `amiga-search.yaml` is **verbatim from** `OrionMesh_Architecture_Plan.md`. This is the shape every other example riffs on; if you only read one YAML in the repo, read this one.
 
-> **Runnable.** `scripts/run-md.py examples/08-canonical/README.md` walks the recipes. Tags: `{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`.
+> **Runnable.** `scripts/run-md.py examples/08-canonical/README.md` walks every recipe in this README end-to-end (with a `{teardown}` step at the end). See [`../docs/runner.md`](../docs/runner.md) for the tag conventions (`{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`) and the drive flags (`--list`, `--only X`, `--dry-run`, `--interactive`).
 
 ## Files
 

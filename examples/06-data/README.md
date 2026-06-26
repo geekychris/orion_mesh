@@ -2,7 +2,7 @@
 
 These resources describe **data and credentials that workloads consume**, not workloads themselves. The scheduler uses Datasets to drive data-locality scoring; Models drive runtime + memory matching; Volumes describe shared storage; Secrets are resolver URIs that the agent dereferences at workload start.
 
-> **Runnable.** `scripts/run-md.py examples/06-data/README.md` walks the recipes end-to-end. Tags: `{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`.
+> **Runnable.** `scripts/run-md.py examples/06-data/README.md` walks every recipe in this README end-to-end (with a `{teardown}` step at the end). See [`../docs/runner.md`](../docs/runner.md) for the tag conventions (`{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`) and the drive flags (`--list`, `--only X`, `--dry-run`, `--interactive`).
 
 ## Datasets
 

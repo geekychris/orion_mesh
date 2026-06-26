@@ -35,3 +35,4 @@ tower-http.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 cron.workspace = true
+reqwest.workspace = true

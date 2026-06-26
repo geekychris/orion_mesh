@@ -2,7 +2,7 @@
 
 OrionMesh treats Dev Portal, KQueue, and other OrionMesh instances as **peers, not parents**. Each is a `kind: Runtime` resource in the catalog; workloads can hand off via `runtime: { kind: peer, system: <name>, ref: <id> }`. Both sides stay independent — Dev Portal continues to work without OrionMesh and vice versa.
 
-> **Runnable.** `scripts/run-md.py examples/07-peers/README.md` walks the recipes end-to-end. Tags: `{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`.
+> **Runnable.** `scripts/run-md.py examples/07-peers/README.md` walks every recipe in this README end-to-end (with a `{teardown}` step at the end). See [`../docs/runner.md`](../docs/runner.md) for the tag conventions (`{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`) and the drive flags (`--list`, `--only X`, `--dry-run`, `--interactive`).
 
 ## Concept
 

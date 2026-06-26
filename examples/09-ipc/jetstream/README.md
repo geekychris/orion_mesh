@@ -10,9 +10,7 @@ JetStream is NATS's persistent + at-least-once layer. Unlike core NATS (which dr
 
 Polyglot JetStream wrappers live under [`../polyglot/python/js_{pub,sub}.py`](../polyglot/python/) and [`../polyglot/java/src/main/java/io/orionmesh/demo/Js{Pub,Sub}.java`](../polyglot/java/). All three share stream + subject conventions so they interoperate.
 
-> **Runnable.** `scripts/run-md.py examples/09-ipc/jetstream/README.md` runs
-> the durability + load-balanced recipes in order, then tears down. To run just
-> one section: `--only durability` or `--only load-balanced`.
+> **Runnable.** `scripts/run-md.py examples/09-ipc/jetstream/README.md` walks every recipe in this README end-to-end (with a `{teardown}` step at the end). See [`../../docs/runner.md`](../../docs/runner.md) for the tag conventions (`{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`) and the drive flags (`--list`, `--only X`, `--dry-run`, `--interactive`).
 
 ## Run the durability demo
 

@@ -2,7 +2,7 @@
 
 A **Task** is a *one-shot* workload — it runs to completion (zero or non-zero exit), and then it's done. Use Task for batch jobs, backups, migrations, training runs, or anything with a defined beginning and end. Use [Service](../01-services/) for things that should stay up.
 
-> **Runnable.** `scripts/run-md.py examples/02-tasks/README.md` walks the recipes end-to-end and tears down. Tags: `{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`.
+> **Runnable.** `scripts/run-md.py examples/02-tasks/README.md` walks every recipe in this README end-to-end (with a `{teardown}` step at the end). See [`../docs/runner.md`](../docs/runner.md) for the tag conventions (`{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`) and the drive flags (`--list`, `--only X`, `--dry-run`, `--interactive`).
 
 ## Concept
 

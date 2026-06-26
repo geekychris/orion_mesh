@@ -2,7 +2,7 @@
 
 A **Schedule** fires a Task on a cron expression. The controller has a tick loop running every 5 seconds; when a Schedule's next fire time has passed, the controller dispatches the referenced (or inline) Task.
 
-> **Runnable.** `scripts/run-md.py examples/03-schedules/README.md` walks the recipes end-to-end. Tags: `{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`.
+> **Runnable.** `scripts/run-md.py examples/03-schedules/README.md` walks every recipe in this README end-to-end (with a `{teardown}` step at the end). See [`../docs/runner.md`](../docs/runner.md) for the tag conventions (`{name=X}`, `{skip}`, `{allow_fail}`, `{teardown}`) and the drive flags (`--list`, `--only X`, `--dry-run`, `--interactive`).
 
 ## Concept
 

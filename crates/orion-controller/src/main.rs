@@ -23,7 +23,7 @@ use clap::Parser;
 use futures::StreamExt;
 use orion_auth::AuthMode;
 use orion_bus::{
-    ControlRun, Envelope, Heartbeat, LogLine, NodeInventory, Topic, WorkloadKind,
+    ControlRun, ControlStop, Envelope, Heartbeat, LogLine, NodeInventory, Topic, WorkloadKind,
 };
 use orion_store::Store;
 use orion_types::{Resource, ResourceBody, ResourceName, Runtime};
@@ -93,18 +93,75 @@ impl LogBuffer {
             None => (vec![], 0),
         }
     }
+
+    fn line_count(&self) -> usize {
+        let rings = self.rings.lock().unwrap();
+        rings.values().map(|r| r.len()).sum()
+    }
+
+    /// Substring search across every workload's buffer. Returns at most `limit`
+    /// matches with the workload identity attached. `kind_filter` empty = any.
+    fn search(
+        &self,
+        query: &str,
+        kind_filter: Option<&str>,
+        name_filter: Option<&str>,
+        limit: usize,
+    ) -> Vec<SearchHit> {
+        let rings = self.rings.lock().unwrap();
+        let mut hits: Vec<SearchHit> = Vec::new();
+        for ((kind, name), ring) in rings.iter() {
+            if let Some(k) = kind_filter {
+                if k != kind {
+                    continue;
+                }
+            }
+            if let Some(n) = name_filter {
+                if n != name {
+                    continue;
+                }
+            }
+            for entry in ring.iter() {
+                if entry.line.contains(query) {
+                    hits.push(SearchHit {
+                        kind: kind.clone(),
+                        name: name.clone(),
+                        at: entry.at,
+                        node_id: entry.node_id.clone(),
+                        stream: entry.stream.clone(),
+                        line: entry.line.clone(),
+                    });
+                }
+            }
+        }
+        // Newest first.
+        hits.sort_by(|a, b| b.at.cmp(&a.at));
+        hits.truncate(limit);
+        hits
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct SearchHit {
+    kind: String,
+    name: String,
+    at: DateTime<Utc>,
+    node_id: String,
+    stream: String,
+    line: String,
 }
 
 #[derive(Clone)]
 struct AppState {
     store: Arc<Store>,
     nats: Client,
+    nats_url: String,
     node_id: NodeIdRegistry,
     logs: Arc<LogBuffer>,
     schedules: Arc<ScheduleRegistry>,
     instances: Arc<InstanceRegistry>,
-    #[allow(dead_code)]
     auth: AuthMode,
+    started_at: DateTime<Utc>,
 }
 
 /// Live instance index. Learned from two sources:
@@ -223,6 +280,22 @@ impl InstanceRegistry {
         out.sort_by_key(|r| r.replica_index);
         out
     }
+
+    fn snapshot_all(&self) -> Vec<InstanceRecord> {
+        let by_id = self.by_id.lock().unwrap();
+        let mut out: Vec<_> = by_id.values().cloned().collect();
+        out.sort_by(|a, b| (a.kind.clone(), a.name.clone(), a.replica_index).cmp(&(b.kind.clone(), b.name.clone(), b.replica_index)));
+        out
+    }
+
+    fn drain_for(&self, kind: &str, name: &str) -> Vec<InstanceRecord> {
+        let mut by_workload = self.by_workload.lock().unwrap();
+        let ids = by_workload
+            .remove(&(kind.to_owned(), name.to_owned()))
+            .unwrap_or_default();
+        let mut by_id = self.by_id.lock().unwrap();
+        ids.iter().filter_map(|i| by_id.remove(i)).collect()
+    }
 }
 
 /// Observed state of every Schedule the controller has seen.
@@ -310,11 +383,13 @@ async fn main() -> Result<()> {
     let state = AppState {
         store: store.clone(),
         nats: nats.clone(),
+        nats_url: args.nats_url.clone(),
         node_id: NodeIdRegistry::default(),
         logs: Arc::new(LogBuffer::default()),
         schedules: Arc::new(ScheduleRegistry::default()),
         instances: Arc::new(InstanceRegistry::default()),
         auth: auth.clone(),
+        started_at: Utc::now(),
     };
 
     // ----- subscribers
@@ -367,7 +442,13 @@ async fn main() -> Result<()> {
         .route("/v1/resources/apply", post(apply_resource))
         .route("/v1/dispatch/:kind/:name", post(dispatch_resource))
         .route("/v1/logs/:kind/:name", get(get_logs))
+        .route("/v1/logs/search", get(search_logs))
+        .route("/v1/instances", get(list_all_instances))
         .route("/v1/instances/:kind/:name", get(get_instances))
+        .route("/v1/control/:kind/:name/stop", post(stop_workload))
+        .route("/v1/control/:kind/:name/restart", post(restart_workload))
+        .route("/v1/diag/system", get(diag_system))
+        .route("/v1/diag/jetstream", get(diag_jetstream))
         .route("/v1/schedules/observed", get(list_schedule_observations))
         .layer(from_fn_with_state(auth, orion_auth::http::require_bearer))
         .route("/health", get(health))
@@ -895,6 +976,422 @@ struct DeleteOutcome {
     kind: String,
     name: String,
     deleted: bool,
+}
+
+// ============================================================ diagnostics
+
+#[derive(Deserialize)]
+struct LogSearchQuery {
+    q: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default = "default_search_limit")]
+    limit: usize,
+}
+
+fn default_search_limit() -> usize {
+    200
+}
+
+async fn search_logs(
+    State(state): State<AppState>,
+    Query(q): Query<LogSearchQuery>,
+) -> Json<Vec<SearchHit>> {
+    Json(state.logs.search(
+        &q.q,
+        q.kind.as_deref(),
+        q.name.as_deref(),
+        q.limit,
+    ))
+}
+
+async fn list_all_instances(State(state): State<AppState>) -> Json<Vec<InstanceRecord>> {
+    Json(state.instances.snapshot_all())
+}
+
+#[derive(Serialize)]
+struct StopOutcome {
+    kind: String,
+    name: String,
+    stopped: u32,
+    nodes: Vec<String>,
+}
+
+async fn stop_workload(
+    State(state): State<AppState>,
+    Path((kind, name)): Path<(String, String)>,
+) -> Result<Json<StopOutcome>, ApiError> {
+    let instances = state.instances.drain_for(&kind, &name);
+    if instances.is_empty() {
+        return Err(ApiError::not_found(format!(
+            "no live instances of {kind}/{name}"
+        )));
+    }
+    let mut nodes: Vec<String> = Vec::new();
+    let mut stopped: u32 = 0;
+    for rec in &instances {
+        let Some(node) = rec.node.clone() else { continue };
+        let envelope = Envelope::new(
+            None,
+            ControlStop {
+                instance_id: rec.instance_id,
+                reason: Some(format!("stop_workload {}/{}", kind, name)),
+                grace_seconds: Some(5),
+            },
+        );
+        let bytes = serde_json::to_vec(&envelope).expect("encode ControlStop");
+        let subject = Topic::ControlStop.for_node(&node);
+        if state.nats.publish(subject, bytes.into()).await.is_ok() {
+            stopped += 1;
+            if !nodes.contains(&node) {
+                nodes.push(node);
+            }
+        }
+    }
+    Ok(Json(StopOutcome {
+        kind,
+        name,
+        stopped,
+        nodes,
+    }))
+}
+
+#[derive(Serialize)]
+struct RestartOutcome {
+    kind: String,
+    name: String,
+    stopped: u32,
+    redispatched: bool,
+    node: Option<String>,
+    instance_id: Option<Uuid>,
+}
+
+async fn restart_workload(
+    State(state): State<AppState>,
+    Path((kind, name)): Path<(String, String)>,
+) -> Result<Json<RestartOutcome>, ApiError> {
+    let stop_outcome = stop_workload(State(state.clone()), Path((kind.clone(), name.clone())))
+        .await
+        .ok();
+    let stopped = stop_outcome
+        .as_ref()
+        .map(|o| o.0.stopped)
+        .unwrap_or(0);
+    // Brief pause so the agent can reap the children before we re-dispatch.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Re-dispatch via the existing route handler — share the same path.
+    let outcome = dispatch_resource(
+        State(state),
+        Path((kind.clone(), name.clone())),
+    )
+    .await?;
+    Ok(Json(RestartOutcome {
+        kind,
+        name,
+        stopped,
+        redispatched: true,
+        node: Some(outcome.0.node),
+        instance_id: Some(outcome.0.instance_id),
+    }))
+}
+
+#[derive(Serialize)]
+struct DiagSystem {
+    controller: ControllerDiag,
+    agents: usize,
+    nodes: Vec<DiagNode>,
+    instances: InstanceStats,
+    schedules: ScheduleStats,
+    logs: LogStats,
+    nats: NatsDiag,
+}
+
+#[derive(Serialize)]
+struct ControllerDiag {
+    started_at: DateTime<Utc>,
+    uptime_seconds: i64,
+    nats_url: String,
+    auth_disabled: bool,
+    version: &'static str,
+}
+
+#[derive(Serialize)]
+struct DiagNode {
+    node_id: String,
+    agent_version: String,
+    last_seen_at: String,
+    seconds_since_seen: i64,
+}
+
+#[derive(Serialize)]
+struct InstanceStats {
+    total: usize,
+    by_workload: Vec<WorkloadInstanceCount>,
+}
+
+#[derive(Serialize)]
+struct WorkloadInstanceCount {
+    kind: String,
+    name: String,
+    instance_count: usize,
+}
+
+#[derive(Serialize)]
+struct ScheduleStats {
+    armed: usize,
+    fired_total: u32,
+}
+
+#[derive(Serialize)]
+struct LogStats {
+    buffered_lines: usize,
+    workloads_with_logs: usize,
+}
+
+#[derive(Serialize)]
+struct NatsDiag {
+    connected: bool,
+    url: String,
+    monitoring_url: Option<String>,
+    server_info: Option<serde_json::Value>,
+}
+
+async fn diag_system(State(state): State<AppState>) -> Result<Json<DiagSystem>, ApiError> {
+    let now = Utc::now();
+    let nodes_raw = state.store.list_nodes().await.map_err(ApiError::store)?;
+    let nodes = nodes_raw
+        .into_iter()
+        .map(|n| {
+            let secs = (now - n.last_seen_at).num_seconds();
+            DiagNode {
+                node_id: n.node_id,
+                agent_version: n.agent_version,
+                last_seen_at: n.last_seen_at.to_rfc3339(),
+                seconds_since_seen: secs,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let inst = state.instances.snapshot_all();
+    let mut by_key: HashMap<(String, String), usize> = HashMap::new();
+    for r in &inst {
+        *by_key.entry((r.kind.clone(), r.name.clone())).or_default() += 1;
+    }
+    let mut by_workload: Vec<_> = by_key
+        .into_iter()
+        .map(|((k, n), c)| WorkloadInstanceCount { kind: k, name: n, instance_count: c })
+        .collect();
+    by_workload.sort_by(|a, b| (a.kind.clone(), a.name.clone()).cmp(&(b.kind.clone(), b.name.clone())));
+
+    let sched_snap = state.schedules.snapshot();
+    let schedules = ScheduleStats {
+        armed: sched_snap.len(),
+        fired_total: sched_snap.values().map(|o| o.fire_count).sum(),
+    };
+
+    let logs = LogStats {
+        buffered_lines: state.logs.line_count(),
+        workloads_with_logs: state.logs.rings.lock().unwrap().len(),
+    };
+
+    let monitoring_url = derive_nats_monitoring_url(&state.nats_url);
+    let server_info = if let Some(url) = &monitoring_url {
+        fetch_nats_varz(url).await.ok()
+    } else {
+        None
+    };
+    let nats = NatsDiag {
+        connected: server_info.is_some(),
+        url: state.nats_url.clone(),
+        monitoring_url,
+        server_info,
+    };
+
+    let agents = nodes.iter().filter(|n| n.seconds_since_seen < 30).count();
+    let controller = ControllerDiag {
+        started_at: state.started_at,
+        uptime_seconds: (now - state.started_at).num_seconds(),
+        nats_url: state.nats_url.clone(),
+        auth_disabled: state.auth.is_disabled(),
+        version: env!("CARGO_PKG_VERSION"),
+    };
+    Ok(Json(DiagSystem {
+        controller,
+        agents,
+        nodes,
+        instances: InstanceStats {
+            total: inst.len(),
+            by_workload,
+        },
+        schedules,
+        logs,
+        nats,
+    }))
+}
+
+fn derive_nats_monitoring_url(nats_url: &str) -> Option<String> {
+    // nats://host:4222 → http://host:8222 (the conventional monitoring port)
+    let host = nats_url
+        .strip_prefix("nats://")
+        .unwrap_or(nats_url)
+        .split('/')
+        .next()
+        .unwrap_or("");
+    let host = host.split(':').next().unwrap_or("");
+    if host.is_empty() {
+        return None;
+    }
+    Some(format!("http://{host}:8222"))
+}
+
+async fn fetch_nats_varz(monitoring_url: &str) -> Result<serde_json::Value, ApiError> {
+    let url = format!("{monitoring_url}/varz");
+    let resp = reqwest::get(&url)
+        .await
+        .map_err(|e| ApiError::internal(format!("nats /varz: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(ApiError::internal(format!(
+            "nats /varz status {}",
+            resp.status()
+        )));
+    }
+    resp.json::<serde_json::Value>()
+        .await
+        .map_err(|e| ApiError::internal(format!("nats /varz parse: {e}")))
+}
+
+#[derive(Serialize)]
+struct DiagJetStream {
+    monitoring_url: Option<String>,
+    accounts: Option<serde_json::Value>,
+    streams: Vec<JsStream>,
+    consumers: Vec<JsConsumer>,
+    raw_jsz: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct JsStream {
+    name: String,
+    subjects: Vec<String>,
+    messages: u64,
+    bytes: u64,
+    first_seq: u64,
+    last_seq: u64,
+    consumer_count: u32,
+}
+
+#[derive(Serialize)]
+struct JsConsumer {
+    stream: String,
+    name: String,
+    num_pending: u64,
+    num_ack_pending: u64,
+    delivered: u64,
+    last_ack_floor: u64,
+}
+
+async fn diag_jetstream(
+    State(state): State<AppState>,
+) -> Result<Json<DiagJetStream>, ApiError> {
+    let Some(monitoring_url) = derive_nats_monitoring_url(&state.nats_url) else {
+        return Ok(Json(DiagJetStream {
+            monitoring_url: None,
+            accounts: None,
+            streams: vec![],
+            consumers: vec![],
+            raw_jsz: None,
+        }));
+    };
+    let url = format!("{monitoring_url}/jsz?accounts=true&streams=true&consumers=true&config=true");
+    let resp = reqwest::get(&url)
+        .await
+        .map_err(|e| ApiError::internal(format!("nats /jsz: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(ApiError::internal(format!(
+            "nats /jsz status {}",
+            resp.status()
+        )));
+    }
+    let raw: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| ApiError::internal(format!("nats /jsz parse: {e}")))?;
+
+    let mut streams: Vec<JsStream> = Vec::new();
+    let mut consumers: Vec<JsConsumer> = Vec::new();
+
+    // jsz layout: { account_details: [ { name, stream_detail: [ { config: { name, subjects }, state: {...}, consumer_detail: [...] }, ... ] } ] }
+    if let Some(accounts) = raw.get("account_details").and_then(|v| v.as_array()) {
+        for acct in accounts {
+            let stream_detail = acct
+                .get("stream_detail")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            for s in &stream_detail {
+                let config = s.get("config").cloned().unwrap_or(serde_json::Value::Null);
+                let state_obj = s.get("state").cloned().unwrap_or(serde_json::Value::Null);
+                let name = config.get("name").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                let subjects = config
+                    .get("subjects")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                let messages = state_obj.get("messages").and_then(|v| v.as_u64()).unwrap_or(0);
+                let bytes = state_obj.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+                let first_seq = state_obj.get("first_seq").and_then(|v| v.as_u64()).unwrap_or(0);
+                let last_seq = state_obj.get("last_seq").and_then(|v| v.as_u64()).unwrap_or(0);
+                let cons_arr = s
+                    .get("consumer_detail")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let consumer_count = cons_arr.len() as u32;
+                streams.push(JsStream {
+                    name: name.clone(),
+                    subjects,
+                    messages,
+                    bytes,
+                    first_seq,
+                    last_seq,
+                    consumer_count,
+                });
+                for c in &cons_arr {
+                    let cname = c.get("name").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                    let num_pending = c.get("num_pending").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let num_ack_pending = c.get("num_ack_pending").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let delivered = c
+                        .get("delivered")
+                        .and_then(|v| v.get("consumer_seq"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let last_ack_floor = c
+                        .get("ack_floor")
+                        .and_then(|v| v.get("consumer_seq"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    consumers.push(JsConsumer {
+                        stream: name.clone(),
+                        name: cname,
+                        num_pending,
+                        num_ack_pending,
+                        delivered,
+                        last_ack_floor,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(Json(DiagJetStream {
+        monitoring_url: Some(monitoring_url),
+        accounts: raw.get("account_details").cloned(),
+        streams,
+        consumers,
+        raw_jsz: Some(raw),
+    }))
 }
 
 // ============================================================ error mapping
