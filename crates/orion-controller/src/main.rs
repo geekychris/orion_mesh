@@ -26,12 +26,14 @@ use orion_bus::{
     ControlRun, Envelope, Heartbeat, LogLine, NodeInventory, Topic, WorkloadKind,
 };
 use orion_store::Store;
-use orion_types::{Resource, ResourceBody, Runtime};
+use orion_types::{Resource, ResourceBody, ResourceName, Runtime};
+use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
@@ -99,8 +101,48 @@ struct AppState {
     nats: Client,
     node_id: NodeIdRegistry,
     logs: Arc<LogBuffer>,
+    schedules: Arc<ScheduleRegistry>,
     #[allow(dead_code)]
     auth: AuthMode,
+}
+
+/// Observed state of every Schedule the controller has seen.
+/// Keyed by Schedule resource name. Phase-2-lite: in-memory only.
+#[derive(Default)]
+struct ScheduleRegistry {
+    by_name: Mutex<HashMap<String, ScheduleObservation>>,
+}
+
+#[derive(Clone, Serialize)]
+struct ScheduleObservation {
+    /// When the controller first started tracking this Schedule.
+    armed_at: DateTime<Utc>,
+    last_fired_at: Option<DateTime<Utc>>,
+    last_instance_id: Option<Uuid>,
+    /// Next time the cron will fire (computed at the last tick).
+    next_fire_at: Option<DateTime<Utc>>,
+    /// Most recent error from a fire attempt; cleared on success.
+    last_error: Option<String>,
+    fire_count: u32,
+}
+
+impl ScheduleRegistry {
+    fn observe<F: FnOnce(&mut ScheduleObservation)>(&self, name: &str, f: F) {
+        let mut map = self.by_name.lock().unwrap();
+        let entry = map.entry(name.to_owned()).or_insert_with(|| ScheduleObservation {
+            armed_at: Utc::now(),
+            last_fired_at: None,
+            last_instance_id: None,
+            next_fire_at: None,
+            last_error: None,
+            fire_count: 0,
+        });
+        f(entry);
+    }
+
+    fn snapshot(&self) -> HashMap<String, ScheduleObservation> {
+        self.by_name.lock().unwrap().clone()
+    }
 }
 
 /// Tracks the most recent live node id (for dispatch). Phase 5 will replace
@@ -151,6 +193,7 @@ async fn main() -> Result<()> {
         nats: nats.clone(),
         node_id: NodeIdRegistry::default(),
         logs: Arc::new(LogBuffer::default()),
+        schedules: Arc::new(ScheduleRegistry::default()),
         auth: auth.clone(),
     };
 
@@ -183,6 +226,12 @@ async fn main() -> Result<()> {
             }
         }
     });
+    tokio::spawn({
+        let state = state.clone();
+        async move {
+            scheduler_tick_loop(state).await;
+        }
+    });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -197,6 +246,7 @@ async fn main() -> Result<()> {
         .route("/v1/resources/apply", post(apply_resource))
         .route("/v1/dispatch/:kind/:name", post(dispatch_resource))
         .route("/v1/logs/:kind/:name", get(get_logs))
+        .route("/v1/schedules/observed", get(list_schedule_observations))
         .layer(from_fn_with_state(auth, orion_auth::http::require_bearer))
         .route("/health", get(health))
         .layer(cors)
@@ -445,25 +495,43 @@ async fn dispatch_resource(
         _ => unreachable!(),
     };
 
+    let workload_kind = if kind == "Service" { WorkloadKind::Service } else { WorkloadKind::Task };
+    let generation = resource.metadata.generation.unwrap_or(1);
+
+    let (node, instance_id) = dispatch_workload(
+        &state,
+        workload_kind,
+        resource.metadata.name.clone(),
+        runtime,
+        generation,
+    )
+    .await?;
+
+    Ok(Json(DispatchOutcome { kind, name, node, instance_id }))
+}
+
+/// Shared dispatch path used by POST /v1/dispatch and by the scheduler tick.
+/// Picks a node (currently: most recent live), generates an instance_id,
+/// publishes a ControlRun envelope, returns (node, instance_id).
+async fn dispatch_workload(
+    state: &AppState,
+    kind: WorkloadKind,
+    name: ResourceName,
+    runtime: Runtime,
+    generation: u64,
+) -> Result<(String, Uuid), ApiError> {
     let node = state.node_id.get().ok_or_else(|| {
         ApiError::bad_request("no live nodes — start an agent first")
     })?;
-
-    let workload_kind = if kind == "Service" {
-        WorkloadKind::Service
-    } else {
-        WorkloadKind::Task
-    };
-
     let instance_id = Uuid::new_v4();
     let envelope = Envelope::new(
         None,
         ControlRun {
             instance_id,
-            kind: workload_kind,
-            name: resource.metadata.name.clone(),
+            kind,
+            name,
             runtime,
-            generation: resource.metadata.generation.unwrap_or(1),
+            generation,
         },
     );
     let payload = serde_json::to_vec(&envelope).expect("encode ControlRun");
@@ -473,13 +541,156 @@ async fn dispatch_resource(
         .publish(subject, payload.into())
         .await
         .map_err(|e| ApiError::internal(format!("publish control.run: {e}")))?;
+    Ok((node, instance_id))
+}
 
-    Ok(Json(DispatchOutcome {
-        kind,
-        name,
-        node,
-        instance_id,
-    }))
+// ============================================================ scheduler tick
+
+const SCHEDULER_TICK_SECONDS: u64 = 5;
+
+async fn scheduler_tick_loop(state: AppState) {
+    let mut ticker = tokio::time::interval(Duration::from_secs(SCHEDULER_TICK_SECONDS));
+    // Skip the immediate fire on startup.
+    ticker.tick().await;
+    loop {
+        ticker.tick().await;
+        if let Err(e) = scheduler_tick_once(&state).await {
+            warn!(error = ?e, "scheduler tick failed");
+        }
+    }
+}
+
+async fn scheduler_tick_once(state: &AppState) -> Result<()> {
+    let schedules = state.store.list_by_kind("Schedule").await?;
+    let now = Utc::now();
+
+    for sched in schedules {
+        let name = sched.metadata.name.0.clone();
+        let spec = match &sched.body {
+            ResourceBody::Schedule { spec, .. } => spec.clone(),
+            _ => continue,
+        };
+
+        // Parse cron — the `cron` crate expects 6 fields (with seconds).
+        // Users author the 5-field POSIX form; prepend "0 " to align.
+        let cron_expr = if spec.cron.split_whitespace().count() == 5 {
+            format!("0 {}", spec.cron)
+        } else {
+            spec.cron.clone()
+        };
+        let parsed = match cron::Schedule::from_str(&cron_expr) {
+            Ok(s) => s,
+            Err(e) => {
+                state.schedules.observe(&name, |o| {
+                    o.last_error = Some(format!("cron parse: {e}"));
+                    o.next_fire_at = None;
+                });
+                continue;
+            }
+        };
+
+        // Find next fire after the last_fired_at (or armed_at if never).
+        let armed = state
+            .schedules
+            .by_name
+            .lock()
+            .unwrap()
+            .get(&name)
+            .map(|o| o.armed_at);
+        let after = match armed {
+            Some(armed_at) => state
+                .schedules
+                .by_name
+                .lock()
+                .unwrap()
+                .get(&name)
+                .and_then(|o| o.last_fired_at)
+                .unwrap_or(armed_at),
+            None => {
+                // First time seeing this Schedule.
+                state.schedules.observe(&name, |o| {
+                    o.next_fire_at = parsed.after(&now).next();
+                });
+                continue;
+            }
+        };
+
+        let next = parsed.after(&after).next();
+        state.schedules.observe(&name, |o| o.next_fire_at = next);
+
+        if let Some(t) = next {
+            if t > now {
+                continue;
+            }
+
+            // Time to fire. Resolve task → runtime.
+            let (workload_name, runtime) = match resolve_schedule_target(state, &spec).await {
+                Ok(x) => x,
+                Err(e) => {
+                    state.schedules.observe(&name, |o| {
+                        o.last_error = Some(e);
+                    });
+                    continue;
+                }
+            };
+
+            match dispatch_workload(state, WorkloadKind::Task, workload_name, runtime, 1).await {
+                Ok((_node, id)) => {
+                    state.schedules.observe(&name, |o| {
+                        o.last_fired_at = Some(now);
+                        o.last_instance_id = Some(id);
+                        o.last_error = None;
+                        o.fire_count += 1;
+                        o.next_fire_at = parsed.after(&now).next();
+                    });
+                    info!(schedule = %name, instance = %id, "schedule fired");
+                }
+                Err(e) => {
+                    state.schedules.observe(&name, |o| {
+                        o.last_error = Some(e.message.clone());
+                        // Don't bump last_fired_at on failure; we'll try again next tick.
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn resolve_schedule_target(
+    state: &AppState,
+    spec: &orion_types::ScheduleSpec,
+) -> Result<(ResourceName, Runtime), String> {
+    if let Some(template) = &spec.task_template {
+        let rt = template
+            .runtime
+            .clone()
+            .ok_or_else(|| "task_template has no runtime".to_owned())?;
+        return Ok((ResourceName::from("inline-task"), rt));
+    }
+    if let Some(task_name) = &spec.task {
+        let task = state
+            .store
+            .get_resource("Task", "_", &task_name.0)
+            .await
+            .map_err(|e| format!("store: {e}"))?
+            .ok_or_else(|| format!("referenced Task '{}' not found", task_name.0))?;
+        let rt = match task.body {
+            ResourceBody::Task { spec, .. } => spec
+                .runtime
+                .clone()
+                .ok_or_else(|| "referenced Task has no runtime".to_owned())?,
+            _ => return Err("referenced resource is not a Task".to_owned()),
+        };
+        return Ok((task_name.clone(), rt));
+    }
+    Err("schedule has no task or task_template (should not happen if validate() ran)".to_owned())
+}
+
+async fn list_schedule_observations(
+    State(state): State<AppState>,
+) -> Json<HashMap<String, ScheduleObservation>> {
+    Json(state.schedules.snapshot())
 }
 
 #[derive(Deserialize)]

@@ -51,6 +51,7 @@ clap = { version = "4", features = ["derive", "env"] }
 redb = "2"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "chrono", "uuid", "json", "migrate"] }
 sysinfo = "0.32"
+cron = "0.12"
 
 orion-types = { path = "crates/orion-types" }
 orion-bus = { path = "crates/orion-bus" }

@@ -592,11 +592,62 @@
       if (isWorkload) {
         detailWrap.append(makeLogsPanel(kind, selectedResource.metadata.name));
       }
+      if (kind === "Schedule") {
+        detailWrap.append(makeSchedulePanel(selectedResource.metadata.name));
+      }
     }
     panel.append(detailWrap);
 
     wrap.append(panel);
     return wrap;
+  }
+
+  // ------------------------------------------------------------- schedule observer
+  function makeSchedulePanel(name) {
+    const panel = el("div", { class: "logs-panel" });
+    const header = el("div", { class: "logs-header" });
+    header.append(el("h3", {}, "Cron observer"));
+    const meta = el("span", { class: "meta" }, "polling…");
+    header.append(meta);
+    panel.append(header);
+
+    const body = el("div", { class: "logs-tail", style: "max-height: 160px" });
+    panel.append(body);
+
+    const key = `Schedule/${name}`;
+    if (state.logTimers[key]) clearInterval(state.logTimers[key]);
+
+    const poll = async () => {
+      try {
+        const obs = await api("/v1/schedules/observed");
+        const o = obs[name];
+        meta.textContent = o ? `fired ${o.fire_count}× since armed` : "not yet armed";
+        body.innerHTML = "";
+        if (!o) {
+          body.append(el("div", { class: "logs-empty" }, "controller hasn't ticked this Schedule yet"));
+          return;
+        }
+        const rows = [
+          ["armed at",    o.armed_at],
+          ["last fired",  o.last_fired_at || "never"],
+          ["next fire",   o.next_fire_at || "?"],
+          ["fire count",  String(o.fire_count)],
+          ["last error",  o.last_error || "(none)"],
+        ];
+        for (const [k, v] of rows) {
+          const row = el("div", { class: "log-row" });
+          row.append(el("span", { class: "stream" }, k));
+          row.append(el("span", { class: "ts" }, ""));
+          row.append(el("span", {}, v));
+          body.append(row);
+        }
+      } catch (e) {
+        meta.textContent = "✗ " + String(e);
+      }
+    };
+    poll();
+    state.logTimers[key] = setInterval(poll, 3000);
+    return panel;
   }
 
   // ------------------------------------------------------------- live log viewer
