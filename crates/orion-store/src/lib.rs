@@ -30,12 +30,19 @@ pub struct Store {
 
 impl Store {
     /// Open the SQLite database at `path` (creating it if missing) and apply migrations.
+    ///
+    /// After the migration runner, also runs a defensive `CREATE TABLE IF NOT EXISTS`
+    /// pass for every table the application needs. This makes startup robust against
+    /// the case where someone (or a stray `sqlite3 < script.sql`) dropped a table
+    /// after V0002 was already marked applied; the migration system won't re-run
+    /// V0002, but the runtime guard creates the missing table without failure.
     pub async fn open(path: &str) -> Result<Self, StoreError> {
         let opts = SqliteConnectOptions::from_str(path)?
             .create_if_missing(true)
             .foreign_keys(true);
         let pool = SqlitePool::connect_with(opts).await?;
         sqlx::migrate!("./src/migrations").run(&pool).await?;
+        ensure_tables(&pool).await?;
         Ok(Self { pool })
     }
 
@@ -143,6 +150,39 @@ impl Store {
 }
 
 pub use node_cache::ObservedNode;
+
+/// Runtime guard — independent of the migration system. Idempotent CREATE for
+/// every table this crate touches. Survives schema drops after migrations ran.
+async fn ensure_tables(pool: &SqlitePool) -> Result<(), StoreError> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS resource (
+            kind            TEXT    NOT NULL,
+            namespace       TEXT    NOT NULL DEFAULT '_',
+            name            TEXT    NOT NULL,
+            generation      INTEGER NOT NULL DEFAULT 1,
+            body            TEXT    NOT NULL,
+            created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'subsec')),
+            updated_at      TEXT    NOT NULL DEFAULT (datetime('now', 'subsec')),
+            PRIMARY KEY (kind, namespace, name)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS resource_kind_idx ON resource(kind)")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS observed_node (
+            node_id         TEXT PRIMARY KEY,
+            agent_version   TEXT NOT NULL,
+            inventory       TEXT,
+            last_seen_at    TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests;
