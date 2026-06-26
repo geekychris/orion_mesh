@@ -590,6 +590,7 @@
       detailWrap.append(pre);
 
       if (isWorkload) {
+        detailWrap.append(makeInstancesPanel(kind, selectedResource));
         detailWrap.append(makeLogsPanel(kind, selectedResource.metadata.name));
       }
       if (kind === "Schedule") {
@@ -600,6 +601,89 @@
 
     wrap.append(panel);
     return wrap;
+  }
+
+  // ------------------------------------------------------------- instances panel
+  function makeInstancesPanel(kind, resource) {
+    const name = resource.metadata.name;
+    const spec = resource.spec || {};
+    const declaredReplicas = spec.replicas ?? 1;
+    const runtime = spec.runtime || {};
+    const args = runtime.args || [];
+    const env = runtime.env || {};
+    const exec = runtime.exec || runtime.image || "(no runtime exec)";
+
+    const panel = el("div", { class: "logs-panel" });
+    const header = el("div", { class: "logs-header" });
+    header.append(el("h3", {}, "Instances"));
+    const meta = el("span", { class: "meta" }, "polling…");
+    header.append(meta);
+    panel.append(header);
+
+    // Spec card — read-only summary from the YAML
+    const spec_card = el("div", { class: "logs-tail", style: "max-height: none; padding: .75rem" });
+    const rows = [
+      ["runtime",      `${runtime.kind || "?"} · ${exec}`],
+      ["args",         args.length ? args.map(a => JSON.stringify(a)).join(" ") : "(none)"],
+      ["env",          Object.keys(env).length ? Object.entries(env).map(([k,v]) => `${k}=${v}`).join(", ") : "(none)"],
+      ["replicas",     String(declaredReplicas)],
+      ["restart",      spec.restart_policy || "always"],
+    ];
+    for (const [k, v] of rows) {
+      const row = el("div", { class: "log-row" });
+      row.append(el("span", { class: "stream" }, k));
+      row.append(el("span", { class: "ts" }, ""));
+      row.append(el("span", {}, v));
+      spec_card.append(row);
+    }
+    panel.append(spec_card);
+
+    // Live instance list
+    const instances_table = el("table", { style: "margin-top: .75rem; font-size:.78rem" });
+    instances_table.append(el("thead", {}, el("tr", {},
+      el("th", {}, "Replica"),
+      el("th", {}, "Instance id"),
+      el("th", {}, "Node"),
+      el("th", {}, "First seen"),
+      el("th", {}, "Last seen"),
+      el("th", {}, "Lines"))));
+    const tb = el("tbody");
+    tb.append(el("tr", {}, el("td", { colspan: "6", class: "logs-empty" }, "no instances tracked yet — Dispatch to launch")));
+    instances_table.append(tb);
+    panel.append(instances_table);
+
+    const key = `instances/${kind}/${name}`;
+    if (state.logTimers[key]) clearInterval(state.logTimers[key]);
+
+    const poll = async () => {
+      try {
+        const rows = await api(`/v1/instances/${kind}/${name}`);
+        meta.textContent = `${rows.length} of ${declaredReplicas} replica${declaredReplicas===1?'':'s'} tracked`;
+        if (!rows.length) {
+          tb.innerHTML = "";
+          tb.append(el("tr", {}, el("td", { colspan: "6", class: "logs-empty" }, "no instances tracked yet — Dispatch to launch")));
+          return;
+        }
+        tb.innerHTML = "";
+        for (const r of rows) {
+          const idShort = r.instance_id.slice(0, 8) + "…";
+          const first = r.first_seen_at ? new Date(r.first_seen_at).toLocaleTimeString() : "—";
+          const last  = r.last_seen_at  ? new Date(r.last_seen_at).toLocaleTimeString() : "—";
+          tb.append(el("tr", {},
+            el("td", {}, `r${r.replica_index}`),
+            el("td", { style: "font-family: ui-monospace, Menlo, monospace" }, idShort),
+            el("td", {}, r.node || el("span", { class: "dim" }, "—")),
+            el("td", {}, first),
+            el("td", {}, last),
+            el("td", {}, String(r.line_count))));
+        }
+      } catch (e) {
+        meta.textContent = "✗ " + String(e);
+      }
+    };
+    poll();
+    state.logTimers[key] = setInterval(poll, 3000);
+    return panel;
   }
 
   // ------------------------------------------------------------- schedule observer

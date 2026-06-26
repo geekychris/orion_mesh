@@ -102,8 +102,127 @@ struct AppState {
     node_id: NodeIdRegistry,
     logs: Arc<LogBuffer>,
     schedules: Arc<ScheduleRegistry>,
+    instances: Arc<InstanceRegistry>,
     #[allow(dead_code)]
     auth: AuthMode,
+}
+
+/// Live instance index. Learned from two sources:
+///   - on POST /v1/dispatch: we record (kind, name, node, replicas, dispatched_at)
+///   - on LogLine envelopes: we tag instance_id with first_seen_at + last_seen_at
+#[derive(Default)]
+struct InstanceRegistry {
+    by_id: Mutex<HashMap<Uuid, InstanceRecord>>,
+    /// Index from (kind, name) → set of instance ids, for the /v1/instances/{kind}/{name} endpoint.
+    by_workload: Mutex<HashMap<(String, String), Vec<Uuid>>>,
+}
+
+#[derive(Clone, Serialize)]
+struct InstanceRecord {
+    instance_id: Uuid,
+    kind: String,
+    name: String,
+    node: Option<String>,
+    /// 0..replicas-1; defaults to 0 if we can't tell.
+    replica_index: u32,
+    dispatched_at: Option<DateTime<Utc>>,
+    first_seen_at: Option<DateTime<Utc>>,
+    last_seen_at: Option<DateTime<Utc>>,
+    line_count: u32,
+}
+
+impl InstanceRegistry {
+    fn record_dispatch(
+        &self,
+        instance_id: Uuid,
+        kind: &str,
+        name: &str,
+        node: Option<&str>,
+        replicas: u32,
+    ) {
+        // The 0-th instance keeps the controller-supplied id; later replicas get
+        // their own at the agent. We pre-populate replica 0 here and let logs
+        // fill in the others as they arrive.
+        let now = Utc::now();
+        let mut by_id = self.by_id.lock().unwrap();
+        let mut by_workload = self.by_workload.lock().unwrap();
+        by_id
+            .entry(instance_id)
+            .and_modify(|r| {
+                r.dispatched_at = Some(now);
+                r.node = node.map(|s| s.to_owned()).or(r.node.clone());
+            })
+            .or_insert(InstanceRecord {
+                instance_id,
+                kind: kind.to_owned(),
+                name: name.to_owned(),
+                node: node.map(|s| s.to_owned()),
+                replica_index: 0,
+                dispatched_at: Some(now),
+                first_seen_at: None,
+                last_seen_at: None,
+                line_count: 0,
+            });
+        let key = (kind.to_owned(), name.to_owned());
+        let ids = by_workload.entry(key).or_default();
+        if !ids.contains(&instance_id) {
+            ids.push(instance_id);
+        }
+        let _ = replicas; // replica fan-out is observed via LogLine instance_ids
+    }
+
+    /// Called from subscribe_logs() when a LogLine carries an instance_id.
+    fn note_line(
+        &self,
+        instance_id: Uuid,
+        kind: &str,
+        name: &str,
+        node: &str,
+        replica_index: u32,
+        at: DateTime<Utc>,
+    ) {
+        let mut by_id = self.by_id.lock().unwrap();
+        let mut by_workload = self.by_workload.lock().unwrap();
+        by_id
+            .entry(instance_id)
+            .and_modify(|r| {
+                r.first_seen_at.get_or_insert(at);
+                r.last_seen_at = Some(at);
+                r.line_count = r.line_count.saturating_add(1);
+                r.replica_index = replica_index;
+                if r.node.is_none() {
+                    r.node = Some(node.to_owned());
+                }
+            })
+            .or_insert(InstanceRecord {
+                instance_id,
+                kind: kind.to_owned(),
+                name: name.to_owned(),
+                node: Some(node.to_owned()),
+                replica_index,
+                dispatched_at: None,
+                first_seen_at: Some(at),
+                last_seen_at: Some(at),
+                line_count: 1,
+            });
+        let key = (kind.to_owned(), name.to_owned());
+        let ids = by_workload.entry(key).or_default();
+        if !ids.contains(&instance_id) {
+            ids.push(instance_id);
+        }
+    }
+
+    fn snapshot_for(&self, kind: &str, name: &str) -> Vec<InstanceRecord> {
+        let by_workload = self.by_workload.lock().unwrap();
+        let ids = by_workload
+            .get(&(kind.to_owned(), name.to_owned()))
+            .cloned()
+            .unwrap_or_default();
+        let by_id = self.by_id.lock().unwrap();
+        let mut out: Vec<_> = ids.iter().filter_map(|i| by_id.get(i).cloned()).collect();
+        out.sort_by_key(|r| r.replica_index);
+        out
+    }
 }
 
 /// Observed state of every Schedule the controller has seen.
@@ -194,6 +313,7 @@ async fn main() -> Result<()> {
         node_id: NodeIdRegistry::default(),
         logs: Arc::new(LogBuffer::default()),
         schedules: Arc::new(ScheduleRegistry::default()),
+        instances: Arc::new(InstanceRegistry::default()),
         auth: auth.clone(),
     };
 
@@ -220,8 +340,9 @@ async fn main() -> Result<()> {
     tokio::spawn({
         let nats = nats.clone();
         let logs = state.logs.clone();
+        let instances = state.instances.clone();
         async move {
-            if let Err(e) = subscribe_logs(nats, logs).await {
+            if let Err(e) = subscribe_logs(nats, logs, instances).await {
                 warn!(error = ?e, "log subscriber exited");
             }
         }
@@ -246,6 +367,7 @@ async fn main() -> Result<()> {
         .route("/v1/resources/apply", post(apply_resource))
         .route("/v1/dispatch/:kind/:name", post(dispatch_resource))
         .route("/v1/logs/:kind/:name", get(get_logs))
+        .route("/v1/instances/:kind/:name", get(get_instances))
         .route("/v1/schedules/observed", get(list_schedule_observations))
         .layer(from_fn_with_state(auth, orion_auth::http::require_bearer))
         .route("/health", get(health))
@@ -306,7 +428,11 @@ async fn subscribe_inventory(client: Client, store: Arc<Store>) -> Result<()> {
     Ok(())
 }
 
-async fn subscribe_logs(client: Client, logs: Arc<LogBuffer>) -> Result<()> {
+async fn subscribe_logs(
+    client: Client,
+    logs: Arc<LogBuffer>,
+    instances: Arc<InstanceRegistry>,
+) -> Result<()> {
     // Wildcard: every per-node logs subject (orion.logs.<node>) feeds into here.
     let mut sub = client.subscribe(Topic::Logs.as_str().to_owned()).await?;
     info!("subscribed to {}", Topic::Logs.as_str());
@@ -330,6 +456,26 @@ async fn subscribe_logs(client: Client, logs: Arc<LogBuffer>) -> Result<()> {
                 };
                 logs.push("Service", &line.service.0, entry.clone());
                 logs.push("Task", &line.service.0, entry);
+                if let Some(iid) = line.instance_id {
+                    // Same ambiguity — note under both kinds; only the matching
+                    // workload's instances panel will surface it.
+                    instances.note_line(
+                        iid,
+                        "Service",
+                        &line.service.0,
+                        &line.node_id.0,
+                        line.replica_index,
+                        env.at,
+                    );
+                    instances.note_line(
+                        iid,
+                        "Task",
+                        &line.service.0,
+                        &line.node_id.0,
+                        line.replica_index,
+                        env.at,
+                    );
+                }
             }
             Err(e) => warn!(error = ?e, "malformed log envelope"),
         }
@@ -512,7 +658,18 @@ async fn dispatch_resource(
     )
     .await?;
 
+    state
+        .instances
+        .record_dispatch(instance_id, &kind, &name, Some(&node), replicas);
+
     Ok(Json(DispatchOutcome { kind, name, node, instance_id }))
+}
+
+async fn get_instances(
+    State(state): State<AppState>,
+    Path((kind, name)): Path<(String, String)>,
+) -> Json<Vec<InstanceRecord>> {
+    Json(state.instances.snapshot_for(&kind, &name))
 }
 
 /// Shared dispatch path used by POST /v1/dispatch and by the scheduler tick.
