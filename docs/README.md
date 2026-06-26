@@ -33,6 +33,8 @@ flowchart LR
 | [examples.md](examples.md) | You want a guided tour of the `examples/` tree with copy-pasteable CLI recipes |
 | [skills.md](skills.md) | You want Claude (or scripts) to drive OrionMesh for you — apply, dispatch, schedule, tail logs |
 | [ipc.md](ipc.md) | You want to know how Services talk to each other, what `replicas:` does, fan-out vs queue-group vs JetStream, and how the polyglot demos work |
+| [diagnostics.md](diagnostics.md) | You want to debug or monitor — `/v1/diag/*` endpoints, UI Diag tab, `orion-diag` skill, stop-by-name |
+| [runner.md](runner.md) | You want to know how `scripts/run-md.py` works — tag conventions, drive flags, authoring runnable READMEs |
 | [architecture.md](architecture.md) | You're modifying the code or trying to understand how the pieces talk |
 | [design.md](design.md) | You're considering reversing a decision and want the trade-off recorded |
 

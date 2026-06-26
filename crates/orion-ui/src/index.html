@@ -443,7 +443,8 @@
       make(k, c, state.activeTab === k);
     }
     make("Apply", null, state.activeTab === "Apply");
-    make("Demo", null, state.activeTab === "Demo");
+    make("Diag",  null, state.activeTab === "Diag");
+    make("Demo",  null, state.activeTab === "Demo");
   }
 
   // ------------------------------------------------------------- render: views
@@ -458,6 +459,7 @@
     if (state.activeTab === "Nodes") v.append(viewNodes());
     else if (state.activeTab === "Apply") v.append(viewApply());
     else if (state.activeTab === "Demo") v.append(viewDemo());
+    else if (state.activeTab === "Diag") v.append(viewDiag());
     else v.append(viewKind(state.activeTab));
   }
 
@@ -558,11 +560,33 @@
           try {
             const out = await api(`/v1/dispatch/${kind}/${selectedResource.metadata.name}`, { method: "POST" });
             dispatchMsg.textContent = `running on ${out.node} (instance ${out.instance_id.slice(0,8)}…)`;
-            // Reset the log baseline so we see fresh output.
             state.logSince[`${kind}/${selectedResource.metadata.name}`] = 0;
           } catch (e) { dispatchMsg.textContent = "✗ " + String(e); }
         };
         actions.append(dispatch);
+
+        const stop = el("button", { class: "action danger" }, "Stop all");
+        stop.onclick = async () => {
+          if (!confirm(`Stop ALL replicas of ${kind}/${selectedResource.metadata.name}?`)) return;
+          dispatchMsg.textContent = "stopping…";
+          try {
+            const out = await api(`/v1/control/${kind}/${selectedResource.metadata.name}/stop`, { method: "POST" });
+            dispatchMsg.textContent = `stopped ${out.stopped} on ${(out.nodes || []).join(", ")}`;
+          } catch (e) { dispatchMsg.textContent = "✗ " + String(e); }
+        };
+        actions.append(stop);
+
+        const restart = el("button", { class: "action" }, "Restart");
+        restart.onclick = async () => {
+          if (!confirm(`Restart ${kind}/${selectedResource.metadata.name}? (stop + re-dispatch)`)) return;
+          dispatchMsg.textContent = "restarting…";
+          try {
+            const out = await api(`/v1/control/${kind}/${selectedResource.metadata.name}/restart`, { method: "POST" });
+            dispatchMsg.textContent = `restarted: stopped ${out.stopped}, dispatched on ${out.node}`;
+            state.logSince[`${kind}/${selectedResource.metadata.name}`] = 0;
+          } catch (e) { dispatchMsg.textContent = "✗ " + String(e); }
+        };
+        actions.append(restart);
       }
       const editBtn = el("button", { class: "action" }, "Edit (copy to Apply)");
       editBtn.onclick = () => {
@@ -1056,6 +1080,231 @@ spec:
   }
 
   // ------------------------------------------------------------- view: demo
+  // ------------------------------------------------------------- view: diagnostics
+  function viewDiag() {
+    const wrap = el("section", { class: "view active" });
+
+    const intro = el("div", { class: "phase-note" });
+    intro.innerHTML =
+      "<strong>Diagnostics.</strong> Endpoints: <code>/v1/diag/system</code>, " +
+      "<code>/v1/diag/jetstream</code>, <code>/v1/instances</code>, " +
+      "<code>/v1/logs/search?q=…</code>, <code>POST /v1/control/{kind}/{name}/stop|restart</code>. " +
+      "See <a href=\"https://github.com/geekychris/orion_mesh/blob/main/docs/diagnostics.md\">docs/diagnostics.md</a>.";
+    wrap.append(intro);
+
+    wrap.append(makeSystemCard());
+    wrap.append(makeJetStreamCard());
+    wrap.append(makeAllInstancesCard());
+    wrap.append(makeLogSearchCard());
+    return wrap;
+  }
+
+  function makeSystemCard() {
+    const card = makeCard("System overview", "/v1/diag/system — controller + agents + instances + NATS + logs at a glance.");
+    const body = el("pre", { class: "yaml", style: "max-height: 360px" });
+    body.textContent = "loading…";
+    card.append(body);
+    const refresh = async () => {
+      try {
+        const d = await api("/v1/diag/system");
+        const ctrl = d.controller || {};
+        const upMin = Math.floor((ctrl.uptime_seconds || 0) / 60);
+        const lines = [
+          `controller       v${ctrl.version}  uptime ${upMin}m  auth=${ctrl.auth_disabled ? "disabled" : "enforced"}`,
+          `nats             ${ctrl.nats_url}  ${d.nats?.connected ? "✓ connected" : "✗ disconnected"}`,
+          ``,
+          `nodes            ${(d.nodes||[]).length} total, ${d.agents} live (last seen <30s)`,
+        ];
+        for (const n of d.nodes || []) {
+          const fresh = n.seconds_since_seen < 30 ? "✓" : "stale";
+          lines.push(`  ${n.node_id.padEnd(14)} v${n.agent_version}  ${fresh}  ${n.seconds_since_seen}s since last seen`);
+        }
+        lines.push(``);
+        lines.push(`instances        ${d.instances.total} total`);
+        for (const w of d.instances.by_workload || []) {
+          lines.push(`  ${w.kind}/${w.name}  ×${w.instance_count}`);
+        }
+        lines.push(``);
+        lines.push(`schedules        armed=${d.schedules.armed}  fired_total=${d.schedules.fired_total}`);
+        lines.push(`logs             ${d.logs.buffered_lines} lines across ${d.logs.workloads_with_logs} workload(s)`);
+        body.textContent = lines.join("\n");
+      } catch (e) {
+        body.textContent = "error: " + e;
+      }
+    };
+    refresh();
+    state.logTimers["diag-system"] = setInterval(refresh, 5000);
+    return card;
+  }
+
+  function makeJetStreamCard() {
+    const card = makeCard("NATS JetStream", "/v1/diag/jetstream — streams + durable consumers (lag, pending).");
+    const body = el("div");
+    body.innerHTML = '<div class="logs-empty">loading…</div>';
+    card.append(body);
+    const refresh = async () => {
+      try {
+        const d = await api("/v1/diag/jetstream");
+        if (!d.streams.length) {
+          body.innerHTML = '<div class="logs-empty">No JetStream streams. Run the IPC JetStream demo to create one.</div>';
+          return;
+        }
+        body.innerHTML = "";
+        // Streams
+        body.append(el("label", {}, `Streams (${d.streams.length})`));
+        const sTbl = el("table", { style: "font-size:.85rem" });
+        sTbl.append(el("thead", {}, el("tr", {},
+          el("th", {}, "Name"),
+          el("th", {}, "Subjects"),
+          el("th", {}, "Messages"),
+          el("th", {}, "First seq"),
+          el("th", {}, "Last seq"),
+          el("th", {}, "Consumers"))));
+        const sTb = el("tbody");
+        for (const s of d.streams) {
+          sTb.append(el("tr", {},
+            el("td", {}, s.name),
+            el("td", { class: "small dim" }, (s.subjects || []).join(", ")),
+            el("td", {}, String(s.messages)),
+            el("td", {}, String(s.first_seq)),
+            el("td", {}, String(s.last_seq)),
+            el("td", {}, String(s.consumer_count))));
+        }
+        sTbl.append(sTb);
+        body.append(sTbl);
+
+        // Consumers
+        body.append(el("label", { style: "margin-top: .75rem" }, `Consumers (${d.consumers.length})`));
+        const cTbl = el("table", { style: "font-size:.85rem" });
+        cTbl.append(el("thead", {}, el("tr", {},
+          el("th", {}, "Stream"),
+          el("th", {}, "Consumer"),
+          el("th", {}, "Pending"),
+          el("th", {}, "Ack pending"),
+          el("th", {}, "Delivered seq"),
+          el("th", {}, "Ack floor"))));
+        const cTb = el("tbody");
+        for (const c of d.consumers) {
+          const lag = c.delivered - c.last_ack_floor;
+          cTb.append(el("tr", {},
+            el("td", {}, c.stream),
+            el("td", {}, c.name),
+            el("td", {}, String(c.num_pending)),
+            el("td", {}, String(c.num_ack_pending)),
+            el("td", {}, String(c.delivered)),
+            el("td", {}, `${c.last_ack_floor}${lag > 0 ? ' ('+lag+' behind)' : ''}`)));
+        }
+        cTbl.append(cTb);
+        body.append(cTbl);
+      } catch (e) {
+        body.innerHTML = `<div class="logs-empty">error: ${e}</div>`;
+      }
+    };
+    refresh();
+    state.logTimers["diag-js"] = setInterval(refresh, 5000);
+    return card;
+  }
+
+  function makeAllInstancesCard() {
+    const card = makeCard("All instances", "/v1/instances — every tracked replica across every workload. The Stop column kills all replicas of that workload.");
+    const body = el("div");
+    body.innerHTML = '<div class="logs-empty">loading…</div>';
+    card.append(body);
+    const refresh = async () => {
+      try {
+        const rows = await api("/v1/instances");
+        if (!rows.length) {
+          body.innerHTML = '<div class="logs-empty">No instances tracked. Dispatch a Service or Task.</div>';
+          return;
+        }
+        // Group by (kind, name) for Stop button
+        const groups = new Map();
+        for (const r of rows) {
+          const key = `${r.kind}/${r.name}`;
+          if (!groups.has(key)) groups.set(key, { kind: r.kind, name: r.name, replicas: [] });
+          groups.get(key).replicas.push(r);
+        }
+        body.innerHTML = "";
+        const tbl = el("table", { style: "font-size:.85rem; margin-bottom:.5rem" });
+        tbl.append(el("thead", {}, el("tr", {},
+          el("th", {}, "Workload"),
+          el("th", {}, "Replicas"),
+          el("th", {}, "Nodes"),
+          el("th", {}, "Total lines"),
+          el("th", {}, "Action"))));
+        const tb = el("tbody");
+        for (const g of groups.values()) {
+          const tr = el("tr", {});
+          tr.append(el("td", {}, `${g.kind}/${g.name}`));
+          tr.append(el("td", {}, g.replicas.map(r => `r${r.replica_index}`).join(", ")));
+          tr.append(el("td", {}, [...new Set(g.replicas.map(r => r.node).filter(Boolean))].join(", ") || "—"));
+          tr.append(el("td", {}, String(g.replicas.reduce((s, r) => s + r.line_count, 0))));
+          const stopBtn = el("button", { class: "action danger" }, "Stop all");
+          stopBtn.onclick = async () => {
+            if (!confirm(`Stop ${g.replicas.length} replica(s) of ${g.kind}/${g.name}?`)) return;
+            try {
+              const r = await api(`/v1/control/${g.kind}/${g.name}/stop`, { method: "POST" });
+              alert(`Stopped ${r.stopped} on ${r.nodes.join(", ")}`);
+              refresh();
+            } catch (e) { alert(String(e)); }
+          };
+          tr.append(el("td", {}, stopBtn));
+          tb.append(tr);
+        }
+        tbl.append(tb);
+        body.append(tbl);
+      } catch (e) {
+        body.innerHTML = `<div class="logs-empty">error: ${e}</div>`;
+      }
+    };
+    refresh();
+    state.logTimers["diag-inst"] = setInterval(refresh, 4000);
+    return card;
+  }
+
+  function makeLogSearchCard() {
+    const card = makeCard("Log search", "/v1/logs/search?q=… — substring across every workload's log ring. Filter by kind / name.");
+    const row = el("div", { class: "apply-buttons", style: "margin-bottom: .5rem" });
+    const q = el("input", { type: "text", placeholder: "substring (e.g. 'recv:' or 'error')", style: "flex:2; padding:.4rem; border:1px solid var(--line); border-radius:4px; font-family: ui-monospace, Menlo, monospace; font-size:.85rem" });
+    const kind = el("input", { type: "text", placeholder: "kind (optional)", style: "flex:1; padding:.4rem; border:1px solid var(--line); border-radius:4px" });
+    const name = el("input", { type: "text", placeholder: "name (optional)", style: "flex:1; padding:.4rem; border:1px solid var(--line); border-radius:4px" });
+    const btn = el("button", { class: "action primary" }, "Search");
+    row.append(q, kind, name, btn);
+    card.append(row);
+
+    const out = el("div", { class: "logs-tail", style: "max-height: 320px" });
+    out.innerHTML = '<div class="logs-empty">enter a substring and press Search</div>';
+    card.append(out);
+
+    const search = async () => {
+      const params = new URLSearchParams();
+      params.set("q", q.value);
+      if (kind.value) params.set("kind", kind.value);
+      if (name.value) params.set("name", name.value);
+      params.set("limit", "100");
+      try {
+        const hits = await api("/v1/logs/search?" + params);
+        if (!hits.length) {
+          out.innerHTML = `<div class="logs-empty">no matches for '${q.value}'</div>`;
+          return;
+        }
+        out.innerHTML = "";
+        for (const h of hits) {
+          const r = el("div", { class: "log-row" });
+          r.append(el("span", { class: "ts" }, h.at.slice(11,19)));
+          r.append(el("span", { class: "stream" }, `${h.kind}/${h.name}`));
+          r.append(el("span", {}, h.line));
+          out.append(r);
+        }
+      } catch (e) {
+        out.innerHTML = `<div class="logs-empty">error: ${e}</div>`;
+      }
+    };
+    btn.onclick = search;
+    q.onkeydown = (e) => { if (e.key === "Enter") search(); };
+    return card;
+  }
+
   function viewDemo() {
     const wrap = el("section", { class: "view active" });
     const intro = el("div", { class: "phase-note" });
