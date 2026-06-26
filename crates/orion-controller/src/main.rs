@@ -16,6 +16,7 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use tower_http::cors::{Any, CorsLayer};
 use clap::Parser;
 use futures::StreamExt;
 use orion_auth::AuthMode;
@@ -94,6 +95,14 @@ async fn main() -> Result<()> {
         }
     });
 
+    // CORS: the orion-ui server runs on a different port (7879) than the API (7878),
+    // so the browser treats it as cross-origin. Permissive is fine because the auth
+    // layer (Authorization: Bearer) is what gates writes — CORS isn't the security boundary.
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     let router = Router::new()
         .route("/v1/nodes", get(list_nodes))
         .route("/v1/resources/:kind", get(list_resources))
@@ -101,6 +110,7 @@ async fn main() -> Result<()> {
         .layer(from_fn_with_state(auth, orion_auth::http::require_bearer))
         // /health is intentionally outside the auth layer — useful for liveness probes.
         .route("/health", get(health))
+        .layer(cors)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(args.bind).await?;

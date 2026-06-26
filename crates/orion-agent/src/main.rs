@@ -31,6 +31,12 @@ struct Args {
 
     #[arg(long, default_value_t = 5)]
     heartbeat_interval: u64,
+
+    /// Re-publish NodeInventory every N heartbeats. Defaults to ~30s at the
+    /// default heartbeat interval. Keeps the controller current even after a
+    /// controller restart (the inventory snapshot isn't durable on NATS Core).
+    #[arg(long, default_value_t = 6)]
+    inventory_every_n_heartbeats: u32,
 }
 
 #[tokio::main]
@@ -94,11 +100,32 @@ async fn main() -> Result<()> {
     }
 
     let mut ticker = tokio::time::interval(Duration::from_secs(args.heartbeat_interval));
+    let mut tick_count: u32 = 0;
     loop {
         tokio::select! {
             _ = ticker.tick() => {
                 sys.refresh_cpu_usage();
                 sys.refresh_memory();
+                tick_count = tick_count.wrapping_add(1);
+
+                // Periodically re-publish inventory. Inventory rides on NATS Core
+                // (non-durable), so a controller restart loses the last snapshot —
+                // republishing keeps observed state self-healing.
+                if args.inventory_every_n_heartbeats > 0
+                    && tick_count.is_multiple_of(args.inventory_every_n_heartbeats)
+                {
+                    let inv = build_inventory(&node_id, &sys, &registry);
+                    let env = Envelope::new(Some(node_id.clone()), inv);
+                    match serde_json::to_vec(&env) {
+                        Ok(bytes) => {
+                            if let Err(e) = nats.publish(Topic::NodeInventory.as_str().to_owned(), bytes.into()).await {
+                                warn!(error = ?e, "periodic inventory publish failed");
+                            }
+                        }
+                        Err(e) => warn!(error = ?e, "inventory encode failed"),
+                    }
+                }
+
                 let hb = Heartbeat {
                     node_id: node_id.clone(),
                     agent_version: env!("CARGO_PKG_VERSION").to_owned(),
