@@ -26,11 +26,12 @@ pub enum ReconcileAction {
         purge: Vec<uuid::Uuid>,
     },
     /// Some replicas alive, some dead+restartable. Dispatch just the missing
-    /// slots; the agent fans out into that many copies. Purge the dead
+    /// slot indices via `ControlRun.slot_indices`; the agent will launch
+    /// exactly those slots without touching the live ones. Purge the dead
     /// instance ids so the slot accounting starts fresh.
     DispatchPartial {
-        /// How many fresh replicas to launch (= missing + want_restart).
-        replicas: u32,
+        /// Specific replica indices (0..desired) to launch.
+        slot_indices: Vec<u32>,
         purge: Vec<uuid::Uuid>,
     },
 }
@@ -40,6 +41,8 @@ pub enum ReconcileAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstanceObservation {
     pub instance_id: uuid::Uuid,
+    /// 0..desired-1 — which replica slot this instance is filling.
+    pub replica_index: u32,
     pub exited: bool,
     pub exit_code: Option<i32>,
     /// True if the health probe has reported failures past `failure_threshold`.
@@ -51,26 +54,21 @@ pub struct InstanceObservation {
 pub fn decide_reconcile(spec: &ServiceSpec, instances: &[InstanceObservation]) -> ReconcileAction {
     let desired = spec.replicas.unwrap_or(1).max(1);
 
-    // An instance is "effectively dead" if it exited OR if it has been
-    // reported unhealthy past its failure_threshold. The reconciler treats
-    // health-threshold breaches as a Failed exit so the existing
-    // restart_policy logic kicks in.
-    let alive = instances
-        .iter()
-        .filter(|i| !i.exited && !i.unhealthy)
-        .count() as u32;
-
+    // Track which slot indices the controller has *seen* — every alive,
+    // terminal, or wants-restart instance occupies a slot. Missing slots are
+    // 0..desired minus this set.
+    let mut alive_slots: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut terminal_slots: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut restart_slots: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut want_restart_ids = Vec::new();
-    let mut terminal: u32 = 0;
-    for i in instances.iter().filter(|i| i.exited || i.unhealthy) {
-        // Synthesize a "failed" outcome for unhealthy-but-not-exited instances
-        // so OnFailure restarts them and Never leaves them dead in place.
-        let effective_code = if i.exited {
-            i.exit_code.unwrap_or(0)
-        } else {
-            // Unhealthy → treat as non-zero exit.
-            1
-        };
+
+    for i in instances {
+        if !i.exited && !i.unhealthy {
+            alive_slots.insert(i.replica_index);
+            continue;
+        }
+        // Either exited or unhealthy. Decide based on restart_policy.
+        let effective_code = if i.exited { i.exit_code.unwrap_or(0) } else { 1 };
         let restart = match spec.restart_policy {
             RestartPolicy::Always => true,
             RestartPolicy::OnFailure => effective_code != 0,
@@ -78,33 +76,49 @@ pub fn decide_reconcile(spec: &ServiceSpec, instances: &[InstanceObservation]) -
         };
         if restart {
             want_restart_ids.push(i.instance_id);
+            restart_slots.insert(i.replica_index);
         } else {
-            terminal += 1;
+            terminal_slots.insert(i.replica_index);
         }
     }
-    let want_restart = want_restart_ids.len() as u32;
 
-    // Each known slot is in exactly one of: alive, terminal, or want_restart.
-    // "Missing" slots are ones the controller has never seen at all (e.g. a
-    // Service was just applied and nothing has been dispatched yet, or the
-    // controller restarted and lost its in-memory instance map).
-    let accounted = alive.saturating_add(terminal).saturating_add(want_restart);
-    let missing = desired.saturating_sub(accounted);
-    let to_launch = missing + want_restart;
+    let alive = alive_slots.len() as u32;
+    let terminal = terminal_slots.len() as u32;
+    let want_restart = restart_slots.len() as u32;
+
+    // Compute the missing slot indices: 0..desired minus all the slots we've
+    // accounted for. Sort for stable ordering (helps tests + log output).
+    let mut missing_slots: Vec<u32> = (0..desired)
+        .filter(|i| {
+            !alive_slots.contains(i)
+                && !terminal_slots.contains(i)
+                && !restart_slots.contains(i)
+        })
+        .collect();
+    missing_slots.sort_unstable();
+
+    let to_launch = missing_slots.len() as u32 + want_restart;
     if to_launch == 0 {
         return ReconcileAction::NoOp;
     }
+
+    // All slots dead → redispatch the whole Service (legacy fan-out, the
+    // agent's classic path: clean slate, fresh instance ids).
     if alive == 0 && terminal < desired {
         return ReconcileAction::RedispatchAll {
             replicas: desired,
             purge: want_restart_ids,
         };
     }
-    // Partial under-provision: some alive, some dead-restartable. Launch
-    // exactly `to_launch` fresh copies (the agent fans out into that many
-    // replicas, each with its own ORION_REPLICA_INDEX).
+
+    // Partial: launch exactly the missing + restart slot indices.
+    let mut slot_indices = missing_slots;
+    let mut restart_vec: Vec<u32> = restart_slots.into_iter().collect();
+    restart_vec.sort_unstable();
+    slot_indices.extend(restart_vec);
+    slot_indices.sort_unstable();
     ReconcileAction::DispatchPartial {
-        replicas: to_launch,
+        slot_indices,
         purge: want_restart_ids,
     }
 }
@@ -394,6 +408,17 @@ mod tests {
     fn obs(exited: bool, code: Option<i32>) -> InstanceObservation {
         InstanceObservation {
             instance_id: Uuid::new_v4(),
+            replica_index: 0,
+            exited,
+            exit_code: code,
+            unhealthy: false,
+        }
+    }
+
+    fn obs_at(idx: u32, exited: bool, code: Option<i32>) -> InstanceObservation {
+        InstanceObservation {
+            instance_id: Uuid::new_v4(),
+            replica_index: idx,
             exited,
             exit_code: code,
             unhealthy: false,
@@ -403,6 +428,7 @@ mod tests {
     fn obs_unhealthy() -> InstanceObservation {
         InstanceObservation {
             instance_id: Uuid::new_v4(),
+            replica_index: 0,
             exited: false,
             exit_code: None,
             unhealthy: true,
@@ -421,7 +447,7 @@ mod tests {
     fn reconciler_noop_when_alive_count_matches_desired() {
         let action = decide_reconcile(
             &svc(2, RestartPolicy::Always),
-            &[obs(false, None), obs(false, None)],
+            &[obs_at(0, false, None), obs_at(1, false, None)],
         );
         assert_eq!(action, ReconcileAction::NoOp);
     }
@@ -469,16 +495,15 @@ mod tests {
     }
 
     #[test]
-    fn reconciler_partial_dispatches_just_the_missing_slot() {
-        let dead = obs(true, Some(1));
+    fn reconciler_partial_dispatches_just_the_dead_slot() {
+        // Alive slot 0, dead slot 1 — should dispatch only slot 1.
+        let alive = obs_at(0, false, None);
+        let dead = obs_at(1, true, Some(1));
         let dead_id = dead.instance_id;
-        let action = decide_reconcile(
-            &svc(2, RestartPolicy::Always),
-            &[obs(false, None), dead],
-        );
+        let action = decide_reconcile(&svc(2, RestartPolicy::Always), &[alive, dead]);
         match action {
-            ReconcileAction::DispatchPartial { replicas, purge } => {
-                assert_eq!(replicas, 1, "should launch exactly 1 fresh replica");
+            ReconcileAction::DispatchPartial { slot_indices, purge } => {
+                assert_eq!(slot_indices, vec![1]);
                 assert_eq!(purge, vec![dead_id]);
             }
             other => panic!("expected DispatchPartial, got {other:?}"),
@@ -486,22 +511,20 @@ mod tests {
     }
 
     #[test]
-    fn reconciler_partial_launches_count_equal_to_missing_plus_restart() {
-        // desired=4, 1 alive, 1 dead-terminal (exit 0 under OnFailure),
-        // 1 dead-restartable (exit 7), 1 slot never seen.
-        // Accounted = alive + terminal + want_restart = 3, missing = 1.
-        // To launch = 1 (missing) + 1 (restart) = 2 fresh replicas.
-        let dead_ok = obs(true, Some(0));        // terminal (OnFailure + 0)
-        let dead_fail = obs(true, Some(7));      // wants restart
+    fn reconciler_partial_picks_slots_for_missing_and_restart() {
+        // desired=4, slot 0 alive, slot 1 dead-terminal, slot 2 dead-restart,
+        // slot 3 never seen. Should launch [2, 3]. Slot 1 (terminal) stays.
+        let alive = obs_at(0, false, None);
+        let dead_ok = obs_at(1, true, Some(0)); // OnFailure + 0 → terminal
+        let dead_fail = obs_at(2, true, Some(7));
         let dead_fail_id = dead_fail.instance_id;
-        let alive_one = obs(false, None);
         let action = decide_reconcile(
             &svc(4, RestartPolicy::OnFailure),
-            &[alive_one, dead_ok, dead_fail],
+            &[alive, dead_ok, dead_fail],
         );
         match action {
-            ReconcileAction::DispatchPartial { replicas, purge } => {
-                assert_eq!(replicas, 2);
+            ReconcileAction::DispatchPartial { slot_indices, purge } => {
+                assert_eq!(slot_indices, vec![2, 3]);
                 assert_eq!(purge, vec![dead_fail_id]);
             }
             other => panic!("expected DispatchPartial, got {other:?}"),
@@ -509,16 +532,39 @@ mod tests {
     }
 
     #[test]
-    fn reconciler_missing_only_no_restart_dispatches_just_missing_count() {
-        // desired=3, only 1 alive instance recorded → 2 missing, 0 restart.
+    fn reconciler_missing_only_lists_missing_slot_indices() {
+        // desired=3, only slot 0 alive → slots [1, 2] missing.
+        let action = decide_reconcile(&svc(3, RestartPolicy::Always), &[obs_at(0, false, None)]);
+        match action {
+            ReconcileAction::DispatchPartial { slot_indices, purge } => {
+                assert_eq!(slot_indices, vec![1, 2]);
+                assert!(purge.is_empty());
+            }
+            other => panic!("expected DispatchPartial, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconciler_partial_with_health_threshold_marks_unhealthy_slot_for_restart() {
+        // desired=3, slot 0 alive, slot 1 alive, slot 2 unhealthy → dispatch [2].
+        let alive_0 = obs_at(0, false, None);
+        let alive_1 = obs_at(1, false, None);
+        let unhealthy_2 = InstanceObservation {
+            instance_id: Uuid::new_v4(),
+            replica_index: 2,
+            exited: false,
+            exit_code: None,
+            unhealthy: true,
+        };
+        let unhealthy_id = unhealthy_2.instance_id;
         let action = decide_reconcile(
             &svc(3, RestartPolicy::Always),
-            &[obs(false, None)],
+            &[alive_0, alive_1, unhealthy_2],
         );
         match action {
-            ReconcileAction::DispatchPartial { replicas, purge } => {
-                assert_eq!(replicas, 2);
-                assert!(purge.is_empty());
+            ReconcileAction::DispatchPartial { slot_indices, purge } => {
+                assert_eq!(slot_indices, vec![2]);
+                assert_eq!(purge, vec![unhealthy_id]);
             }
             other => panic!("expected DispatchPartial, got {other:?}"),
         }
@@ -549,7 +595,7 @@ mod tests {
     fn reconciler_noop_when_all_terminal_with_never() {
         let action = decide_reconcile(
             &svc(2, RestartPolicy::Never),
-            &[obs(true, Some(0)), obs(true, Some(0))],
+            &[obs_at(0, true, Some(0)), obs_at(1, true, Some(0))],
         );
         assert_eq!(action, ReconcileAction::NoOp);
     }

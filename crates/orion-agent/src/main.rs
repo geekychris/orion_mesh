@@ -573,10 +573,24 @@ async fn dispatch_control(
             )
         })?;
 
-        for idx in 0..replicas {
-            // 0-th instance reuses the controller-supplied id; siblings get fresh ids
-            // so per-instance tracking + per-line attribution stays unambiguous.
-            let id = if idx == 0 { spec.instance_id } else { Uuid::new_v4() };
+        // Decide which replica slots to launch. Default = legacy fan-out
+        // 0..replicas with the 0-th reusing spec.instance_id. Partial-fanout
+        // path (reconciler) sets `slot_indices` explicitly — every slot in
+        // that list gets a fresh instance id so it can't collide with
+        // already-running replicas.
+        let partial_mode = !spec.slot_indices.is_empty();
+        let slots: Vec<u32> = if partial_mode {
+            spec.slot_indices.clone()
+        } else {
+            (0..replicas).collect()
+        };
+        let total_replicas = if partial_mode { replicas } else { slots.len() as u32 };
+        for &idx in &slots {
+            let id = if !partial_mode && idx == 0 {
+                spec.instance_id
+            } else {
+                Uuid::new_v4()
+            };
             instances.record(
                 id,
                 InstanceMeta {
@@ -589,7 +603,7 @@ async fn dispatch_control(
             // Each replica gets its own ORION_REPLICA_INDEX env var so the workload
             // can read it and join the right NATS queue group, pick a worker slot, etc.
             let mut runtime = spec.runtime.clone();
-            inject_replica_env(&mut runtime, idx, replicas);
+            inject_replica_env(&mut runtime, idx, total_replicas);
             adapter
                 .launch(LaunchSpec {
                     instance_id: id,
@@ -1025,6 +1039,46 @@ mod tests {
     #[test]
     fn primary_acceleration_none_on_bare_linux() {
         assert_eq!(primary_acceleration(&[], OperatingSystem::Linux), None);
+    }
+
+    // --------------------------------------------------- slot_indices fan-out
+
+    /// Pure helper that mirrors the slot-selection logic in dispatch_control —
+    /// kept in the test module so we can verify the math without spinning up
+    /// NATS. (The production loop uses the same conditions inline.)
+    fn select_slots_for_launch(replicas: u32, slot_indices: &[u32]) -> (Vec<u32>, u32) {
+        let partial_mode = !slot_indices.is_empty();
+        let slots: Vec<u32> = if partial_mode {
+            slot_indices.to_vec()
+        } else {
+            (0..replicas).collect()
+        };
+        let total = if partial_mode { replicas } else { slots.len() as u32 };
+        (slots, total)
+    }
+
+    #[test]
+    fn slot_indices_empty_falls_back_to_full_fanout() {
+        let (slots, total) = select_slots_for_launch(3, &[]);
+        assert_eq!(slots, vec![0, 1, 2]);
+        assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn slot_indices_nonempty_launches_only_those_slots() {
+        let (slots, total) = select_slots_for_launch(4, &[1, 3]);
+        assert_eq!(slots, vec![1, 3]);
+        // Total replicas reported to the workload is the *desired* count (4),
+        // not the launch count — workloads need the cluster-wide value to
+        // sanity-check their slot-index assignment.
+        assert_eq!(total, 4);
+    }
+
+    #[test]
+    fn slot_indices_single_partial_slot() {
+        let (slots, total) = select_slots_for_launch(5, &[2]);
+        assert_eq!(slots, vec![2]);
+        assert_eq!(total, 5);
     }
 
     #[tokio::test]

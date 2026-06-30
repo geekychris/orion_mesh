@@ -25,6 +25,13 @@ pub struct ControlRun {
     /// loop and publishes ServiceHealth envelopes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check: Option<HealthCheck>,
+    /// Specific replica slot indices to launch. Empty Vec = legacy behaviour
+    /// (fan out 0..replicas, the 0-th reusing `instance_id`). Non-empty Vec =
+    /// launch ONLY these slots, each with a fresh instance id. Used by the
+    /// reconciler's partial-fanout path to fill specific gaps without
+    /// clobbering live replicas with overlapping `ORION_REPLICA_INDEX`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slot_indices: Vec<u32>,
 }
 
 fn default_one_replica() -> u32 {

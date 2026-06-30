@@ -255,6 +255,18 @@ fn control_messages_roundtrip() {
         generation: 3,
         replicas: 1,
         health_check: None,
+        slot_indices: vec![],
+    });
+    // Partial-fanout shape: specific slot indices to launch.
+    assert_roundtrips(ControlRun {
+        instance_id: Uuid::new_v4(),
+        kind: WorkloadKind::Service,
+        name: ResourceName::from("svc"),
+        runtime: rt(),
+        generation: 7,
+        replicas: 3,
+        health_check: None,
+        slot_indices: vec![1, 2],
     });
     assert_roundtrips(ControlStop {
         instance_id: Uuid::new_v4(),

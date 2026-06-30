@@ -913,6 +913,62 @@ async fn dispatch_workload(
             generation,
             replicas,
             health_check,
+            slot_indices: vec![],
+        },
+    );
+    let payload = serde_json::to_vec(&envelope).expect("encode ControlRun");
+    let subject = Topic::ControlRun.for_node(&node);
+    state
+        .nats
+        .publish(subject, payload.into())
+        .await
+        .map_err(|e| ApiError::internal(format!("publish control.run: {e}")))?;
+    Ok((node, instance_id))
+}
+
+/// Reconciler-only dispatch path that launches a specific set of replica slot
+/// indices instead of fanning out 0..replicas. The agent reads `slot_indices`
+/// off the ControlRun and only starts those replicas, leaving any live slots
+/// untouched. `replicas` is still the *total* desired count (forwarded to
+/// every replica's `ORION_REPLICA_COUNT` so workloads can see the full set).
+async fn dispatch_workload_with_slots(
+    state: &AppState,
+    kind: WorkloadKind,
+    name: ResourceName,
+    runtime: Runtime,
+    generation: u64,
+    replicas: u32,
+    slot_indices: Vec<u32>,
+) -> Result<(String, Uuid), ApiError> {
+    let node = pick_node_for_dispatch(state, &name, &kind)
+        .await
+        .ok_or_else(|| ApiError::bad_request("no live nodes match the workload's placement"))?;
+    let instance_id = Uuid::new_v4();
+    let health_check = if matches!(kind, WorkloadKind::Service) {
+        state
+            .store
+            .get_resource("Service", "_", &name.0)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| match r.body {
+                ResourceBody::Service { spec, .. } => spec.health,
+                _ => None,
+            })
+    } else {
+        None
+    };
+    let envelope = Envelope::new(
+        None,
+        ControlRun {
+            instance_id,
+            kind,
+            name,
+            runtime,
+            generation,
+            replicas,
+            health_check,
+            slot_indices,
         },
     );
     let payload = serde_json::to_vec(&envelope).expect("encode ControlRun");
@@ -1521,6 +1577,7 @@ async fn reconcile_once(state: &AppState) -> Result<()> {
                             .unwrap_or(false);
                     decisions::InstanceObservation {
                         instance_id: r.instance_id,
+                        replica_index: r.replica_index,
                         exited: r.exited_at.is_some(),
                         exit_code: r.exit_code,
                         unhealthy,
@@ -1560,7 +1617,7 @@ async fn reconcile_once(state: &AppState) -> Result<()> {
                 }
                 continue;
             }
-            decisions::ReconcileAction::DispatchPartial { replicas, purge } => {
+            decisions::ReconcileAction::DispatchPartial { slot_indices, purge } => {
                 for id in &purge {
                     state.instances.purge(*id);
                     state.health.purge(*id);
@@ -1568,22 +1625,23 @@ async fn reconcile_once(state: &AppState) -> Result<()> {
                 info!(
                     workload = %name,
                     desired,
-                    launching = replicas,
+                    slots = ?slot_indices,
                     purged = purge.len(),
-                    "reconciler: dispatching {} additional replica(s)", replicas
+                    "reconciler: dispatching specific slots"
                 );
-                match dispatch_workload(
+                match dispatch_workload_with_slots(
                     state,
                     WorkloadKind::Service,
                     ResourceName::from(name.as_str()),
                     runtime,
                     generation.unwrap_or(0),
-                    replicas,
+                    desired,
+                    slot_indices,
                 )
                 .await
                 {
                     Ok((node, id)) => {
-                        state.instances.record_dispatch(id, "Service", &name, Some(&node), replicas);
+                        state.instances.record_dispatch(id, "Service", &name, Some(&node), desired);
                     }
                     Err(e) => warn!(workload = %name, error = %e, "partial dispatch failed"),
                 }
