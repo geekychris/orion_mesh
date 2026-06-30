@@ -10,6 +10,32 @@ use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 
+/// Split a multi-document YAML stream into individual documents.
+/// Pure helper for testing — the restore path uses this directly.
+pub fn split_multi_doc(body: &str) -> Vec<String> {
+    body.split("\n---\n")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_owned())
+        .collect()
+}
+
+/// Emit a stream of Resource values as multi-doc YAML. Strips `status` from
+/// each one (snapshots replay desired state). Returns the rendered string.
+pub fn emit_multi_doc(values: &[Value]) -> Result<String> {
+    let mut out = String::new();
+    for r in values {
+        let mut clean = r.clone();
+        if let Some(obj) = clean.as_object_mut() {
+            obj.remove("status");
+        }
+        let yaml = serde_yml::to_string(&clean).context("encoding resource")?;
+        out.push_str("---\n");
+        out.push_str(&yaml);
+    }
+    Ok(out)
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Sub {
     /// Write every resource the controller knows about to a file (or stdout).
@@ -48,8 +74,7 @@ pub async fn run(ctx: &Ctx, sub: Sub) -> Result<()> {
 
 async fn create(ctx: &Ctx, args: CreateArgs) -> Result<()> {
     let kinds: Vec<&str> = args.kinds.split(',').map(|s| s.trim()).collect();
-    let mut out = String::with_capacity(4096);
-    let mut count = 0u32;
+    let mut all_resources: Vec<Value> = Vec::new();
     for kind in &kinds {
         let path = format!("/v1/resources/{kind}");
         let v: Value = match http::get_json(ctx, &path).await {
@@ -59,22 +84,12 @@ async fn create(ctx: &Ctx, args: CreateArgs) -> Result<()> {
                 continue;
             }
         };
-        let arr = match v.as_array() {
-            Some(a) => a,
-            None => continue,
-        };
-        for r in arr {
-            let mut clean = r.clone();
-            // Strip status — restore is a "desired state" replay.
-            if let Some(obj) = clean.as_object_mut() {
-                obj.remove("status");
-            }
-            let yaml = serde_yml::to_string(&clean).context("encoding resource")?;
-            out.push_str("---\n");
-            out.push_str(&yaml);
-            count += 1;
+        if let Some(arr) = v.as_array() {
+            all_resources.extend(arr.iter().cloned());
         }
     }
+    let out = emit_multi_doc(&all_resources)?;
+    let count = all_resources.len();
     if args.out.as_os_str() == "-" {
         print!("{out}");
     } else {
@@ -86,14 +101,11 @@ async fn create(ctx: &Ctx, args: CreateArgs) -> Result<()> {
 
 async fn restore(ctx: &Ctx, args: RestoreArgs) -> Result<()> {
     let body = super::util::read_yaml_input(&args.file)?;
+    let docs = split_multi_doc(&body);
     let mut applied = 0u32;
     let mut failed = 0u32;
-    for doc in body.split("\n---\n") {
-        let trimmed = doc.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        match http::post_yaml(ctx, "/v1/resources/apply", trimmed.to_owned()).await {
+    for doc in docs {
+        match http::post_yaml(ctx, "/v1/resources/apply", doc).await {
             Ok(_) => applied += 1,
             Err(e) => {
                 failed += 1;
@@ -104,4 +116,77 @@ async fn restore(ctx: &Ctx, args: RestoreArgs) -> Result<()> {
     eprintln!("restore done: {applied} applied, {failed} failed");
     let _ = args.force;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn split_handles_three_doc_stream() {
+        let body = "---\nkind: Service\nmetadata: { name: a }\n---\nkind: Service\nmetadata: { name: b }\n---\nkind: Queue\nmetadata: { name: q }\n";
+        let docs = split_multi_doc(body);
+        assert_eq!(docs.len(), 3);
+        assert!(docs[0].contains("name: a"));
+        assert!(docs[2].contains("kind: Queue"));
+    }
+
+    #[test]
+    fn split_ignores_empty_docs_and_trailing_separator() {
+        let body = "---\nkind: A\n---\n\n---\nkind: B\n---\n";
+        let docs = split_multi_doc(body);
+        // Empty docs filter out; we get 2.
+        assert_eq!(docs.len(), 2);
+        assert!(docs[0].contains("kind: A"));
+        assert!(docs[1].contains("kind: B"));
+    }
+
+    #[test]
+    fn emit_strips_status_field() {
+        let resources = vec![json!({
+            "apiVersion": "orionmesh.dev/v1",
+            "kind": "Service",
+            "metadata": { "name": "svc" },
+            "spec": { "replicas": 2 },
+            "status": { "phase": "Running", "observed_generation": 7 }
+        })];
+        let yaml = emit_multi_doc(&resources).unwrap();
+        assert!(!yaml.contains("status"));
+        assert!(!yaml.contains("phase"));
+        assert!(yaml.contains("Service"));
+        assert!(yaml.contains("replicas: 2"));
+    }
+
+    #[test]
+    fn emit_then_split_round_trips_count() {
+        let resources = vec![
+            json!({"apiVersion": "orionmesh.dev/v1", "kind": "Service", "metadata": {"name": "a"}, "spec": {}}),
+            json!({"apiVersion": "orionmesh.dev/v1", "kind": "Queue", "metadata": {"name": "q"}, "spec": {"type": "work"}}),
+            json!({"apiVersion": "orionmesh.dev/v1", "kind": "Schedule", "metadata": {"name": "s"}, "spec": {"cron": "* * * * *", "task": "t"}}),
+        ];
+        let yaml = emit_multi_doc(&resources).unwrap();
+        let docs = split_multi_doc(&yaml);
+        assert_eq!(docs.len(), 3);
+        // Each doc is parseable YAML.
+        for d in &docs {
+            let _: serde_yml::Value = serde_yml::from_str(d).unwrap_or_else(|e| panic!("doc not valid yaml: {e}\n{d}"));
+        }
+    }
+
+    #[test]
+    fn emit_then_split_then_parse_as_resource_succeeds() {
+        // Round-trip through orion_types::Resource — proves restore can re-apply.
+        let r = orion_types::Resource::from_yaml(
+            "apiVersion: orionmesh.dev/v1\nkind: Service\nmetadata: { name: svc }\nspec:\n  runtime: { kind: native, exec: /bin/true }\n",
+        )
+        .unwrap();
+        let v = serde_json::to_value(&r).unwrap();
+        let yaml = emit_multi_doc(&[v]).unwrap();
+        let docs = split_multi_doc(&yaml);
+        assert_eq!(docs.len(), 1);
+        let r2 = orion_types::Resource::from_yaml(&docs[0]).unwrap();
+        assert_eq!(r.metadata.name, r2.metadata.name);
+        assert_eq!(r.kind_str(), r2.kind_str());
+    }
 }

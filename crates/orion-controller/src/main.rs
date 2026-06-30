@@ -8,6 +8,8 @@
 //!     Phase 5 will replace the "pick the first live node" heuristic with the
 //!     real scheduler.
 
+mod decisions;
+
 use anyhow::{Context, Result};
 use async_nats::Client;
 use axum::{
@@ -1355,71 +1357,29 @@ async fn list_workflow_progress(State(state): State<AppState>) -> Json<HashMap<S
 }
 
 async fn prometheus_metrics(State(state): State<AppState>) -> String {
-    let mut out = String::with_capacity(2048);
-    let now_uptime = (Utc::now() - state.started_at).num_seconds().max(0);
-
     let agents = state.store.list_nodes().await.unwrap_or_default();
     let live_agents = {
         let cutoff = Utc::now() - chrono::Duration::seconds(30);
         agents.iter().filter(|n| n.last_seen_at >= cutoff).count()
     };
-    let total_agents = agents.len();
-
     let instances = state.instances.snapshot_all();
-    let alive = instances.iter().filter(|r| r.exited_at.is_none()).count();
-    let exited = instances.iter().filter(|r| r.exited_at.is_some()).count();
-    let failed = instances
-        .iter()
-        .filter(|r| r.exit_kind.as_deref() == Some("failed"))
-        .count();
-
-    let healthy = state
-        .health
-        .snapshot_all()
-        .values()
-        .filter(|h| h.status == "healthy")
-        .count();
-    let unhealthy = state
-        .health
-        .snapshot_all()
-        .values()
-        .filter(|h| h.status == "unhealthy")
-        .count();
-
+    let health_snap = state.health.snapshot_all();
     let schedules = state.schedules.snapshot();
-    let total_fires: u32 = schedules.values().map(|o| o.fire_count).sum();
-
-    use std::fmt::Write;
-    let _ = writeln!(
-        out,
-        "# HELP orion_controller_uptime_seconds Seconds since controller start"
-    );
-    let _ = writeln!(out, "# TYPE orion_controller_uptime_seconds gauge");
-    let _ = writeln!(out, "orion_controller_uptime_seconds {now_uptime}");
-    let _ = writeln!(out, "# HELP orion_agents_total Agents the controller has seen ever");
-    let _ = writeln!(out, "# TYPE orion_agents_total gauge");
-    let _ = writeln!(out, "orion_agents_total {total_agents}");
-    let _ = writeln!(out, "# HELP orion_agents_live Agents whose last heartbeat was within 30s");
-    let _ = writeln!(out, "# TYPE orion_agents_live gauge");
-    let _ = writeln!(out, "orion_agents_live {live_agents}");
-    let _ = writeln!(out, "# HELP orion_instances_alive Workload instances believed alive");
-    let _ = writeln!(out, "# TYPE orion_instances_alive gauge");
-    let _ = writeln!(out, "orion_instances_alive {alive}");
-    let _ = writeln!(out, "# HELP orion_instances_exited Workload instances that have exited");
-    let _ = writeln!(out, "# TYPE orion_instances_exited counter");
-    let _ = writeln!(out, "orion_instances_exited {exited}");
-    let _ = writeln!(out, "# HELP orion_instances_failed Workload instances that exited non-zero");
-    let _ = writeln!(out, "# TYPE orion_instances_failed counter");
-    let _ = writeln!(out, "orion_instances_failed {failed}");
-    let _ = writeln!(out, "# HELP orion_health_status Instances reporting a health status");
-    let _ = writeln!(out, "# TYPE orion_health_status gauge");
-    let _ = writeln!(out, "orion_health_status{{status=\"healthy\"}} {healthy}");
-    let _ = writeln!(out, "orion_health_status{{status=\"unhealthy\"}} {unhealthy}");
-    let _ = writeln!(out, "# HELP orion_schedule_fires_total Total Schedule fires since controller start");
-    let _ = writeln!(out, "# TYPE orion_schedule_fires_total counter");
-    let _ = writeln!(out, "orion_schedule_fires_total {total_fires}");
-
-    out
+    let snap = decisions::MetricsSnapshot {
+        uptime_seconds: (Utc::now() - state.started_at).num_seconds().max(0),
+        agents_total: agents.len(),
+        agents_live: live_agents,
+        instances_alive: instances.iter().filter(|r| r.exited_at.is_none()).count(),
+        instances_exited: instances.iter().filter(|r| r.exited_at.is_some()).count(),
+        instances_failed: instances
+            .iter()
+            .filter(|r| r.exit_kind.as_deref() == Some("failed"))
+            .count(),
+        health_healthy: health_snap.values().filter(|h| h.status == "healthy").count(),
+        health_unhealthy: health_snap.values().filter(|h| h.status == "unhealthy").count(),
+        schedule_fires_total: schedules.values().map(|o| o.fire_count).sum(),
+    };
+    decisions::format_prometheus(&snap)
 }
 
 async fn list_health(State(state): State<AppState>) -> Json<HashMap<String, HealthSnapshot>> {

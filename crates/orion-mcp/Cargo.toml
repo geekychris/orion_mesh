@@ -23,3 +23,7 @@ clap.workspace = true
 [[bin]]
 name = "orion-mcp"
 path = "src/bin/server.rs"
+
+[dev-dependencies]
+axum = { workspace = true }
+tower = { workspace = true }

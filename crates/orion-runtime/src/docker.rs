@@ -233,3 +233,69 @@ async fn forward_lines<R>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn docker_adapter_rejects_non_docker_runtime() {
+        let adapter = DockerAdapter::new();
+        let spec = LaunchSpec {
+            instance_id: Uuid::new_v4(),
+            name: "test".into(),
+            runtime: Runtime::Native {
+                exec: "/bin/true".into(),
+                args: vec![],
+                env: BTreeMap::new(),
+            },
+            log_sink: None,
+            exit_sink: None,
+        };
+        let err = adapter.launch(spec).await.unwrap_err();
+        assert!(matches!(err, RuntimeError::Mismatch { .. }));
+    }
+
+    #[tokio::test]
+    async fn docker_short_id_is_8_chars_of_uuid() {
+        let u: Uuid = "12345678-1111-2222-3333-444455556666".parse().unwrap();
+        assert_eq!(short_id(&u), "12345678");
+    }
+
+    /// Real end-to-end run against a docker daemon. `#[ignore]` because not
+    /// every CI host has docker available; flip via `cargo test -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn docker_adapter_launches_hello_world() {
+        let adapter = DockerAdapter::new();
+        if !adapter.available().await {
+            eprintln!("skipping: docker daemon not reachable");
+            return;
+        }
+        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel();
+        let id = Uuid::new_v4();
+        adapter
+            .launch(LaunchSpec {
+                instance_id: id,
+                name: "hello-test".into(),
+                runtime: Runtime::Docker {
+                    image: "hello-world:latest".into(),
+                    args: vec![],
+                    env: BTreeMap::new(),
+                    ports: vec![],
+                },
+                log_sink: None,
+                exit_sink: Some(exit_tx),
+            })
+            .await
+            .expect("docker launch");
+        let notice = tokio::time::timeout(std::time::Duration::from_secs(60), exit_rx.recv())
+            .await
+            .expect("exit notification arrived")
+            .expect("channel open");
+        assert_eq!(notice.instance_id, id);
+        assert_eq!(notice.exit_code, Some(0));
+    }
+}

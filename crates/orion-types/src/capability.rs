@@ -92,7 +92,7 @@ impl<'de> Deserialize<'de> for AttrMatch {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttrOp {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eq: Option<serde_json::Value>,

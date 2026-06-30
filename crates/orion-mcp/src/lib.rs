@@ -216,6 +216,9 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> anyhow::Result<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::routing::{delete, get, post};
+    use axum::Router;
+    use serde_json::json;
 
     #[test]
     fn tools_list_nonempty() {
@@ -228,5 +231,157 @@ mod tests {
             let schema = tool_input_schema(name);
             assert!(schema.is_object());
         }
+    }
+
+    #[test]
+    fn tools_list_response_shape_is_mcp_compatible() {
+        let resp = tools_list_response(Some(json!(7)));
+        assert_eq!(resp.id, Some(json!(7)));
+        let result = resp.result.expect("ok response has result");
+        let tools = result.get("tools").and_then(|v| v.as_array()).expect("tools array");
+        assert!(!tools.is_empty());
+        let first = &tools[0];
+        assert!(first.get("name").is_some());
+        assert!(first.get("description").is_some());
+        let schema = first.get("inputSchema").expect("inputSchema present");
+        assert_eq!(schema.get("type").and_then(|v| v.as_str()), Some("object"));
+    }
+
+    #[test]
+    fn rpc_response_serialization_drops_optional_fields() {
+        let ok = RpcResponse::ok(Some(json!(1)), json!({"x": 1}));
+        let s = serde_json::to_string(&ok).unwrap();
+        assert!(s.contains("\"result\""));
+        assert!(!s.contains("\"error\""));
+        let err = RpcResponse::err(Some(json!(2)), -32000, "bad");
+        let s = serde_json::to_string(&err).unwrap();
+        assert!(s.contains("\"error\""));
+        assert!(!s.contains("\"result\""));
+    }
+
+    // ------------------------------------------------ integration: fake controller
+
+    /// Spin up a minimal axum server that mimics the controller's endpoints
+    /// the MCP server hits. Returns the base URL.
+    async fn fake_controller() -> String {
+        let app = Router::new()
+            .route("/v1/nodes", get(|| async { axum::Json(json!([{"node_id":"n1"}])) }))
+            .route("/v1/resources/Service", get(|| async { axum::Json(json!([{"metadata":{"name":"svc-a"}}])) }))
+            .route("/v1/resources/Queue", get(|| async { axum::Json(json!([{"metadata":{"name":"q-a"}}])) }))
+            .route("/v1/resources/Task", get(|| async { axum::Json(json!([])) }))
+            .route("/v1/resources/:kind/:name", get(|axum::extract::Path((kind, name)): axum::extract::Path<(String, String)>| async move {
+                axum::Json(json!({"kind": kind, "metadata": {"name": name}}))
+            }).delete(|axum::extract::Path((kind, name)): axum::extract::Path<(String, String)>| async move {
+                axum::Json(json!({"deleted": true, "kind": kind, "name": name}))
+            }))
+            .route("/v1/resources/apply", post(|body: String| async move {
+                axum::Json(json!({"applied": true, "echo": body.lines().count()}))
+            }))
+            .route("/v1/dispatch/:kind/:name", post(|axum::extract::Path((kind, name)): axum::extract::Path<(String, String)>| async move {
+                axum::Json(json!({"kind": kind, "name": name, "instance_id": "00000000-0000-0000-0000-000000000001"}))
+            }))
+            .route("/v1/logs/:kind/:name", get(|| async { axum::Json(json!({"total": 0, "entries": []})) }))
+            .route("/v1/find", post(|body: axum::Json<Value>| async move { axum::Json(json!([{"selector_echo": body.0}])) }))
+            .route("/v1/diag/system", get(|| async { axum::Json(json!({"agents": 1})) }))
+            .route("/v1/diag/jetstream", get(|| async { axum::Json(json!({"streams": []})) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn call_tool_dispatches_get_list_endpoints() {
+        let base = fake_controller().await;
+        let client = reqwest::Client::new();
+        let nodes = call_tool(&client, &base, None, "orion_list_nodes", &json!({})).await.unwrap();
+        let arr = nodes.as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        let svcs = call_tool(&client, &base, None, "orion_list_services", &json!({})).await.unwrap();
+        assert_eq!(svcs.as_array().unwrap()[0]["metadata"]["name"], "svc-a");
+    }
+
+    #[tokio::test]
+    async fn call_tool_routes_get_and_delete_resource_with_path_args() {
+        let base = fake_controller().await;
+        let client = reqwest::Client::new();
+        let got = call_tool(
+            &client,
+            &base,
+            None,
+            "orion_get_resource",
+            &json!({"kind": "Service", "name": "my-svc"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(got["kind"], "Service");
+        assert_eq!(got["metadata"]["name"], "my-svc");
+        let deleted = call_tool(
+            &client,
+            &base,
+            None,
+            "orion_delete_resource",
+            &json!({"kind": "Service", "name": "my-svc"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(deleted["deleted"], true);
+    }
+
+    #[tokio::test]
+    async fn call_tool_apply_resource_posts_yaml_body() {
+        let base = fake_controller().await;
+        let client = reqwest::Client::new();
+        let resp = call_tool(
+            &client,
+            &base,
+            None,
+            "orion_apply_resource",
+            &json!({"yaml": "kind: Service\nmetadata:\n  name: x\n"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp["applied"], true);
+        // The body's line count round-trips through `echo`.
+        assert_eq!(resp["echo"], 3);
+    }
+
+    #[tokio::test]
+    async fn call_tool_find_capability_posts_selector_json() {
+        let base = fake_controller().await;
+        let client = reqwest::Client::new();
+        let resp = call_tool(
+            &client,
+            &base,
+            None,
+            "orion_find_capability",
+            &json!({"selector": {"search": {"dataset": "amiga"}}}),
+        )
+        .await
+        .unwrap();
+        let arr = resp.as_array().expect("array");
+        assert_eq!(arr[0]["selector_echo"]["search"]["dataset"], "amiga");
+    }
+
+    #[tokio::test]
+    async fn call_tool_unknown_name_errors() {
+        let base = fake_controller().await;
+        let client = reqwest::Client::new();
+        let err = call_tool(&client, &base, None, "orion_does_not_exist", &json!({}))
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").to_lowercase().contains("unknown"));
+    }
+
+    #[tokio::test]
+    async fn call_tool_missing_string_arg_errors() {
+        let base = fake_controller().await;
+        let client = reqwest::Client::new();
+        let err = call_tool(&client, &base, None, "orion_get_resource", &json!({"kind": "Service"}))
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("missing"));
     }
 }
