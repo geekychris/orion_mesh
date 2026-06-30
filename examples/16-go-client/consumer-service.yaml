@@ -1,0 +1,15 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata: { name: go-consumer }
+spec:
+  replicas: 1
+  restart_policy: on_failure
+  runtime:
+    kind: native
+    exec: "examples/16-go-client/consumer"
+    args: []
+    env:
+      NATS_URL: nats://127.0.0.1:4222
+      ORION_CONTROLLER_URL: http://127.0.0.1:7878
+      ORION_QUEUE_NAME: events
+      ORION_QUEUE_GROUP: go-consumer-workers
