@@ -15,6 +15,7 @@ pub mod logs;
 pub mod queue;
 pub mod run;
 pub mod schedules;
+pub mod shell;
 pub mod snapshot;
 pub mod stop_restart;
 pub mod tui;

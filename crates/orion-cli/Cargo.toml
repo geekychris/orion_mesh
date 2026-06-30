@@ -30,3 +30,5 @@ chrono.workspace = true
 regex = "1"
 ratatui.workspace = true
 crossterm.workspace = true
+clap_complete = "4"
+uuid.workspace = true

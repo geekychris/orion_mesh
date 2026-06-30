@@ -47,7 +47,7 @@ pub enum Sub {
 #[derive(ClapArgs, Debug)]
 pub struct CreateArgs {
     /// Output path. `-` (default) writes to stdout.
-    #[arg(short = 'o', long = "out", default_value = "-")]
+    #[arg(long = "out", default_value = "-")]
     pub out: PathBuf,
     /// Comma-separated kinds to include. Default: every declarative kind.
     #[arg(long, default_value = "Service,Task,Schedule,Dataset,Model,Project,Volume,Network,Queue,Runtime,Capability,Policy,Integration,Secret")]

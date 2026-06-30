@@ -112,6 +112,14 @@ enum Cmd {
     /// Scaffold a runnable processor project (python/java/rust) on disk.
     #[command(subcommand)]
     Init(cmd::init::Sub),
+    /// Emit a shell completion script (bash, zsh, fish, powershell, elvish).
+    #[command(subcommand)]
+    Completions(cmd::shell::CompletionsSub),
+    /// Emit shell-eval'able env vars. Use as `eval "$(orion env)"`.
+    Env(cmd::shell::EnvArgs),
+    /// One-shot remote exec — wrap a command as a Task, dispatch, tail logs.
+    /// Example: `orion exec -- python -c 'print(1+1)'`
+    Exec(cmd::shell::ExecArgs),
 }
 
 #[tokio::main]
@@ -160,6 +168,9 @@ async fn main() -> Result<()> {
         Cmd::Doctor(a) => cmd::doctor::run(&ctx, a).await,
         Cmd::Bench(s) => cmd::bench::run(&ctx, s).await,
         Cmd::Init(s) => cmd::init::run(&ctx, s).await,
+        Cmd::Completions(s) => cmd::shell::run_completions(cmd::shell::CompletionsArgs { shell: s }),
+        Cmd::Env(a) => cmd::shell::run_env(&ctx, a),
+        Cmd::Exec(a) => cmd::shell::run_exec(&ctx, a).await,
     }
 }
 
