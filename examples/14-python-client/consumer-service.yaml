@@ -1,0 +1,16 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata: { name: py-consumer }
+spec:
+  replicas: 1
+  restart_policy: on_failure
+  runtime:
+    kind: native
+    exec: "examples/14-python-client/.venv/bin/python"
+    args: ["examples/14-python-client/consumer.py"]
+    env:
+      NATS_URL: nats://127.0.0.1:4222
+      ORION_CONTROLLER_URL: http://127.0.0.1:7878
+      ORION_QUEUE_NAME: events
+      ORION_QUEUE_GROUP: py-consumer-workers
+      PYTHONUNBUFFERED: "1"
