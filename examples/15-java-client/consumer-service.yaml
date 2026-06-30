@@ -1,0 +1,15 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata: { name: java-consumer }
+spec:
+  replicas: 1
+  restart_policy: on_failure
+  runtime:
+    kind: native
+    exec: java
+    args: ["-jar", "examples/15-java-client/target/consumer.jar"]
+    env:
+      NATS_URL: nats://127.0.0.1:4222
+      ORION_CONTROLLER_URL: http://127.0.0.1:7878
+      ORION_QUEUE_NAME: events
+      ORION_QUEUE_GROUP: java-consumer-workers
