@@ -14,6 +14,7 @@ members = [
     "crates/orion-cli",
     "crates/orion-ui",
     "crates/orion-demo-bins",
+    "crates/orion-file-watcher",
 ]
 
 [workspace.package]

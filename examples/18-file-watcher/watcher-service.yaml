@@ -1,0 +1,16 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata: { name: log-watcher }
+spec:
+  replicas: 1
+  restart_policy: on_failure
+  runtime:
+    kind: native
+    exec: target/debug/orion-file-watcher
+    args: ["--path", "/tmp/orion-watch-demo/app.log", "--interval-ms", "500"]
+    env:
+      NATS_URL: "nats://127.0.0.1:4222"
+      ORION_QUEUE_NAME: log-events
+      ORION_QUEUE_SUBJECT: orion.queue.log-events
+      ORION_QUEUE_STREAM: ORION_QUEUE_LOG_EVENTS
+      RUST_LOG: info

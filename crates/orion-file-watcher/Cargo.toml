@@ -1,0 +1,29 @@
+[package]
+name = "orion-file-watcher"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "File tail-watcher Service for OrionMesh — publishes new lines to a queue"
+
+[[bin]]
+name = "orion-file-watcher"
+path = "src/bin/main.rs"
+
+[dependencies]
+orion-types.workspace = true
+orion-bus.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs", "io-util", "signal", "time"] }
+async-nats.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
