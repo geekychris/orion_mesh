@@ -25,34 +25,55 @@ pub enum ReconcileAction {
         replicas: u32,
         purge: Vec<uuid::Uuid>,
     },
-    /// Some replicas alive, some dead+restartable. Today we log this and
-    /// wait for the others to die (Phase 5 follow-up).
-    PartialUnderprovisioned {
-        alive: u32,
-        terminal: u32,
-        want_restart: u32,
+    /// Some replicas alive, some dead+restartable. Dispatch just the missing
+    /// slots; the agent fans out into that many copies. Purge the dead
+    /// instance ids so the slot accounting starts fresh.
+    DispatchPartial {
+        /// How many fresh replicas to launch (= missing + want_restart).
+        replicas: u32,
+        purge: Vec<uuid::Uuid>,
     },
 }
 
 /// One observed instance — the bits the reconciler needs to make a decision.
-/// Pulled from `InstanceRecord` at the call site.
+/// Pulled from `InstanceRecord` + `HealthRegistry` at the call site.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstanceObservation {
     pub instance_id: uuid::Uuid,
     pub exited: bool,
     pub exit_code: Option<i32>,
+    /// True if the health probe has reported failures past `failure_threshold`.
+    /// Treated identically to a non-zero exit for restart-policy purposes.
+    #[doc(hidden)]
+    pub unhealthy: bool,
 }
 
 pub fn decide_reconcile(spec: &ServiceSpec, instances: &[InstanceObservation]) -> ReconcileAction {
     let desired = spec.replicas.unwrap_or(1).max(1);
-    let alive = instances.iter().filter(|i| !i.exited).count() as u32;
+
+    // An instance is "effectively dead" if it exited OR if it has been
+    // reported unhealthy past its failure_threshold. The reconciler treats
+    // health-threshold breaches as a Failed exit so the existing
+    // restart_policy logic kicks in.
+    let alive = instances
+        .iter()
+        .filter(|i| !i.exited && !i.unhealthy)
+        .count() as u32;
 
     let mut want_restart_ids = Vec::new();
     let mut terminal: u32 = 0;
-    for i in instances.iter().filter(|i| i.exited) {
+    for i in instances.iter().filter(|i| i.exited || i.unhealthy) {
+        // Synthesize a "failed" outcome for unhealthy-but-not-exited instances
+        // so OnFailure restarts them and Never leaves them dead in place.
+        let effective_code = if i.exited {
+            i.exit_code.unwrap_or(0)
+        } else {
+            // Unhealthy → treat as non-zero exit.
+            1
+        };
         let restart = match spec.restart_policy {
             RestartPolicy::Always => true,
-            RestartPolicy::OnFailure => i.exit_code.unwrap_or(0) != 0,
+            RestartPolicy::OnFailure => effective_code != 0,
             RestartPolicy::Never => false,
         };
         if restart {
@@ -63,8 +84,12 @@ pub fn decide_reconcile(spec: &ServiceSpec, instances: &[InstanceObservation]) -
     }
     let want_restart = want_restart_ids.len() as u32;
 
-    let alive_or_terminal = alive.saturating_add(terminal);
-    let missing = desired.saturating_sub(alive_or_terminal);
+    // Each known slot is in exactly one of: alive, terminal, or want_restart.
+    // "Missing" slots are ones the controller has never seen at all (e.g. a
+    // Service was just applied and nothing has been dispatched yet, or the
+    // controller restarted and lost its in-memory instance map).
+    let accounted = alive.saturating_add(terminal).saturating_add(want_restart);
+    let missing = desired.saturating_sub(accounted);
     let to_launch = missing + want_restart;
     if to_launch == 0 {
         return ReconcileAction::NoOp;
@@ -75,10 +100,12 @@ pub fn decide_reconcile(spec: &ServiceSpec, instances: &[InstanceObservation]) -
             purge: want_restart_ids,
         };
     }
-    ReconcileAction::PartialUnderprovisioned {
-        alive,
-        terminal,
-        want_restart,
+    // Partial under-provision: some alive, some dead-restartable. Launch
+    // exactly `to_launch` fresh copies (the agent fans out into that many
+    // replicas, each with its own ORION_REPLICA_INDEX).
+    ReconcileAction::DispatchPartial {
+        replicas: to_launch,
+        purge: want_restart_ids,
     }
 }
 
@@ -369,6 +396,16 @@ mod tests {
             instance_id: Uuid::new_v4(),
             exited,
             exit_code: code,
+            unhealthy: false,
+        }
+    }
+
+    fn obs_unhealthy() -> InstanceObservation {
+        InstanceObservation {
+            instance_id: Uuid::new_v4(),
+            exited: false,
+            exit_code: None,
+            unhealthy: true,
         }
     }
 
@@ -432,19 +469,80 @@ mod tests {
     }
 
     #[test]
-    fn reconciler_partial_when_some_alive_some_dead() {
+    fn reconciler_partial_dispatches_just_the_missing_slot() {
+        let dead = obs(true, Some(1));
+        let dead_id = dead.instance_id;
         let action = decide_reconcile(
             &svc(2, RestartPolicy::Always),
-            &[obs(false, None), obs(true, Some(1))],
+            &[obs(false, None), dead],
         );
         match action {
-            ReconcileAction::PartialUnderprovisioned { alive, terminal, want_restart } => {
-                assert_eq!(alive, 1);
-                assert_eq!(terminal, 0);
-                assert_eq!(want_restart, 1);
+            ReconcileAction::DispatchPartial { replicas, purge } => {
+                assert_eq!(replicas, 1, "should launch exactly 1 fresh replica");
+                assert_eq!(purge, vec![dead_id]);
             }
-            other => panic!("expected PartialUnderprovisioned, got {other:?}"),
+            other => panic!("expected DispatchPartial, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn reconciler_partial_launches_count_equal_to_missing_plus_restart() {
+        // desired=4, 1 alive, 1 dead-terminal (exit 0 under OnFailure),
+        // 1 dead-restartable (exit 7), 1 slot never seen.
+        // Accounted = alive + terminal + want_restart = 3, missing = 1.
+        // To launch = 1 (missing) + 1 (restart) = 2 fresh replicas.
+        let dead_ok = obs(true, Some(0));        // terminal (OnFailure + 0)
+        let dead_fail = obs(true, Some(7));      // wants restart
+        let dead_fail_id = dead_fail.instance_id;
+        let alive_one = obs(false, None);
+        let action = decide_reconcile(
+            &svc(4, RestartPolicy::OnFailure),
+            &[alive_one, dead_ok, dead_fail],
+        );
+        match action {
+            ReconcileAction::DispatchPartial { replicas, purge } => {
+                assert_eq!(replicas, 2);
+                assert_eq!(purge, vec![dead_fail_id]);
+            }
+            other => panic!("expected DispatchPartial, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconciler_missing_only_no_restart_dispatches_just_missing_count() {
+        // desired=3, only 1 alive instance recorded → 2 missing, 0 restart.
+        let action = decide_reconcile(
+            &svc(3, RestartPolicy::Always),
+            &[obs(false, None)],
+        );
+        match action {
+            ReconcileAction::DispatchPartial { replicas, purge } => {
+                assert_eq!(replicas, 2);
+                assert!(purge.is_empty());
+            }
+            other => panic!("expected DispatchPartial, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconciler_restarts_unhealthy_instance_under_always() {
+        let action = decide_reconcile(&svc(1, RestartPolicy::Always), &[obs_unhealthy()]);
+        assert!(matches!(action, ReconcileAction::RedispatchAll { .. }));
+    }
+
+    #[test]
+    fn reconciler_restarts_unhealthy_under_on_failure() {
+        let action = decide_reconcile(&svc(1, RestartPolicy::OnFailure), &[obs_unhealthy()]);
+        assert!(
+            matches!(action, ReconcileAction::RedispatchAll { .. }),
+            "OnFailure should treat unhealthy as a failure"
+        );
+    }
+
+    #[test]
+    fn reconciler_never_leaves_unhealthy_in_place() {
+        let action = decide_reconcile(&svc(1, RestartPolicy::Never), &[obs_unhealthy()]);
+        assert_eq!(action, ReconcileAction::NoOp);
     }
 
     #[test]

@@ -973,7 +973,7 @@ async fn pick_node_for_dispatch(
             node_id: n.node_id.clone(),
             arch: inv.arch,
             os: inv.os,
-            gpus: vec![], // NodeInventory doesn't carry GPUs today — Phase 5 follow-up
+            gpus: inv.gpus.clone(),
             roles: vec![],
             labels: Default::default(),
         });
@@ -1417,6 +1417,9 @@ impl HealthRegistry {
     fn snapshot_all(&self) -> HashMap<Uuid, HealthSnapshot> {
         self.by_instance.lock().unwrap().clone()
     }
+    fn purge(&self, instance_id: Uuid) {
+        self.by_instance.lock().unwrap().remove(&instance_id);
+    }
 }
 
 async fn subscribe_service_health(state: AppState) -> Result<()> {
@@ -1478,9 +1481,10 @@ async fn reconcile_loop(state: AppState) {
 /// Tasks are NOT auto-restarted by the reconciler — Task is a one-shot resource,
 /// re-firing it is the Schedule subsystem's job.
 async fn reconcile_once(state: &AppState) -> Result<()> {
-    use orion_types::{RestartPolicy, ServiceSpec};
+    use orion_types::ServiceSpec;
 
     let services = state.store.list_by_kind("Service").await?;
+    let health_snap = state.health.snapshot_all();
 
     for svc in services {
         let name = svc.metadata.name.0.clone();
@@ -1496,11 +1500,11 @@ async fn reconcile_once(state: &AppState) -> Result<()> {
             _ => continue,
         };
         let desired = spec.replicas.unwrap_or(1).max(1);
-        let alive = state.instances.count_alive("Service", &name);
 
-        // Inspect every dead replica and classify it as "should restart" or
-        // "terminal" (Never policy, or OnFailure + exit_code==0).
-        let dead: Vec<InstanceRecord> = {
+        // Build the InstanceObservation list. Each known instance maps to an
+        // observation; `unhealthy` is true when the health probe has crossed
+        // failure_threshold for this instance.
+        let observations: Vec<decisions::InstanceObservation> = {
             let by_workload = state.instances.by_workload.lock().unwrap();
             let ids = by_workload
                 .get(&("Service".to_owned(), name.clone()))
@@ -1509,80 +1513,84 @@ async fn reconcile_once(state: &AppState) -> Result<()> {
             let by_id = state.instances.by_id.lock().unwrap();
             ids.iter()
                 .filter_map(|i| by_id.get(i))
-                .filter(|r| r.exited_at.is_some())
-                .cloned()
+                .map(|r| {
+                    let unhealthy = !r.exited_at.is_some()
+                        && health_snap
+                            .get(&r.instance_id)
+                            .map(|h| h.status == "unhealthy")
+                            .unwrap_or(false);
+                    decisions::InstanceObservation {
+                        instance_id: r.instance_id,
+                        exited: r.exited_at.is_some(),
+                        exit_code: r.exit_code,
+                        unhealthy,
+                    }
+                })
                 .collect()
         };
-        let mut want_restart = 0u32;
-        let mut terminal = 0u32;
-        for d in &dead {
-            let restart = match spec.restart_policy {
-                RestartPolicy::Always => true,
-                RestartPolicy::OnFailure => d.exit_code.unwrap_or(0) != 0,
-                RestartPolicy::Never => false,
-            };
-            if restart {
-                want_restart += 1;
-                state.instances.purge(d.instance_id);
+
+        let action = decisions::decide_reconcile(&spec, &observations);
+        match action {
+            decisions::ReconcileAction::NoOp => continue,
+            decisions::ReconcileAction::RedispatchAll { replicas, purge } => {
+                for id in &purge {
+                    state.instances.purge(*id);
+                    state.health.purge(*id);
+                }
                 info!(
                     workload = %name,
-                    instance = %d.instance_id,
-                    exit_code = ?d.exit_code,
-                    policy = ?spec.restart_policy,
-                    "reconciler: restarting replica"
+                    desired = replicas,
+                    purged = purge.len(),
+                    "reconciler: re-dispatching Service (no alive replicas)"
                 );
-            } else {
-                terminal += 1;
-            }
-        }
-
-        // "Missing" = desired - alive - terminal. Slots that terminated under
-        // a no-restart policy count as filled (the workload is complete on
-        // that slot — re-running it would violate the user's policy).
-        let alive_or_terminal = alive.saturating_add(terminal);
-        let missing = desired.saturating_sub(alive_or_terminal);
-        let to_launch = missing + want_restart;
-        if to_launch == 0 {
-            continue;
-        }
-
-        // Phase-5 placeholder: re-dispatch the whole Service. The agent
-        // already fans out into `replicas` copies. Future revision should
-        // dispatch *just* the missing slots, but that needs richer per-slot
-        // tracking. For now: only re-dispatch if NO alive replicas remain
-        // (the common "everything crashed" case).
-        if alive == 0 && terminal < desired {
-            info!(
-                workload = %name,
-                desired,
-                "reconciler: re-dispatching Service (no alive replicas)"
-            );
-            match dispatch_workload(
-                state,
-                WorkloadKind::Service,
-                ResourceName::from(name.as_str()),
-                runtime,
-                generation.unwrap_or(0),
-                desired,
-            )
-            .await
-            {
-                Ok((node, id)) => {
-                    state.instances.record_dispatch(id, "Service", &name, Some(&node), desired);
+                match dispatch_workload(
+                    state,
+                    WorkloadKind::Service,
+                    ResourceName::from(name.as_str()),
+                    runtime,
+                    generation.unwrap_or(0),
+                    replicas,
+                )
+                .await
+                {
+                    Ok((node, id)) => {
+                        state.instances.record_dispatch(id, "Service", &name, Some(&node), replicas);
+                    }
+                    Err(e) => warn!(workload = %name, error = %e, "reconcile dispatch failed"),
                 }
-                Err(e) => warn!(workload = %name, error = %e, "reconcile dispatch failed"),
+                continue;
             }
-        } else if to_launch > 0 {
-            // Some replicas alive, others dead — Phase 5 partial-fanout work.
-            // Log so we know the reconciler noticed without doing the wrong thing.
-            warn!(
-                workload = %name,
-                alive,
-                desired,
-                want_restart,
-                "reconciler: partial under-provision not yet supported (Phase 5 follow-up)"
-            );
+            decisions::ReconcileAction::DispatchPartial { replicas, purge } => {
+                for id in &purge {
+                    state.instances.purge(*id);
+                    state.health.purge(*id);
+                }
+                info!(
+                    workload = %name,
+                    desired,
+                    launching = replicas,
+                    purged = purge.len(),
+                    "reconciler: dispatching {} additional replica(s)", replicas
+                );
+                match dispatch_workload(
+                    state,
+                    WorkloadKind::Service,
+                    ResourceName::from(name.as_str()),
+                    runtime,
+                    generation.unwrap_or(0),
+                    replicas,
+                )
+                .await
+                {
+                    Ok((node, id)) => {
+                        state.instances.record_dispatch(id, "Service", &name, Some(&node), replicas);
+                    }
+                    Err(e) => warn!(workload = %name, error = %e, "partial dispatch failed"),
+                }
+                continue;
+            }
         }
+
     }
     Ok(())
 }

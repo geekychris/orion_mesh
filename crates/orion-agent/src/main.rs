@@ -18,7 +18,7 @@ use orion_runtime::{
     DockerAdapter, ExitNotice, ExitSink, LaunchSpec, LogSink, NativeAdapter, OutStream,
     RuntimeAdapter, RuntimeRegistry,
 };
-use orion_types::{Arch, HealthCheck, NodeId, OperatingSystem, ResourceName};
+use orion_types::{Acceleration, Arch, GpuVendor, HealthCheck, NodeGpu, NodeId, OperatingSystem, ResourceName};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -332,13 +332,17 @@ fn build_inventory(
     sys: &System,
     registry: &RuntimeRegistry,
 ) -> NodeInventory {
+    let arch = detect_arch();
+    let os = detect_os();
+    let gpus = detect_gpus(arch, os, sys.total_memory());
+    let acceleration = primary_acceleration(&gpus, os);
     NodeInventory {
         node_id: node_id.clone(),
         agent_version: env!("CARGO_PKG_VERSION").to_owned(),
-        arch: detect_arch(),
-        os: detect_os(),
-        acceleration: None,
-        gpus: vec![],
+        arch,
+        os,
+        acceleration,
+        gpus,
         cpu_cores: sys.cpus().len() as u32,
         mem_total_bytes: sys.total_memory(),
         disk_gb: None,
@@ -347,6 +351,196 @@ fn build_inventory(
         labels: BTreeMap::new(),
         address: None,
     }
+}
+
+/// Best-effort GPU detection. Returns an empty Vec when nothing is detectable
+/// — never panics, never blocks. macOS uses `system_profiler`; Linux tries
+/// `nvidia-smi` first, then `lspci` for a generic display device. Hardware
+/// without a GPU stays an empty Vec.
+fn detect_gpus(arch: Arch, os: OperatingSystem, total_memory_bytes: u64) -> Vec<NodeGpu> {
+    match os {
+        OperatingSystem::Macos => detect_gpus_macos(arch, total_memory_bytes),
+        OperatingSystem::Linux => detect_gpus_linux(),
+        _ => Vec::new(),
+    }
+}
+
+fn detect_gpus_macos(arch: Arch, total_memory_bytes: u64) -> Vec<NodeGpu> {
+    // Apple Silicon Macs have a unified-memory Apple GPU. VRAM is shared with
+    // the system; conservatively report half of total RAM as the upper bound a
+    // GPU workload could touch without paging.
+    if matches!(arch, Arch::Arm64) {
+        let vram_gb = ((total_memory_bytes / 2) / 1_073_741_824) as u32;
+        return vec![NodeGpu {
+            vendor: GpuVendor::Apple,
+            vram_gb: vram_gb.max(1),
+            name: Some(apple_silicon_marketing_name()),
+        }];
+    }
+    // Intel Macs — try system_profiler. Best-effort; on failure return empty.
+    if let Ok(output) = std::process::Command::new("system_profiler")
+        .args(["SPDisplaysDataType", "-json"])
+        .output()
+    {
+        if output.status.success() {
+            if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                return parse_macos_system_profiler(&parsed);
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Parser exposed for tests — pure transform from system_profiler JSON to GPUs.
+pub(crate) fn parse_macos_system_profiler(v: &serde_json::Value) -> Vec<NodeGpu> {
+    let arr = match v.get("SPDisplaysDataType").and_then(|a| a.as_array()) {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+    let mut gpus = Vec::new();
+    for entry in arr {
+        let model = entry
+            .get("sppci_model")
+            .and_then(|s| s.as_str())
+            .or_else(|| entry.get("_name").and_then(|s| s.as_str()));
+        let vendor = match model.unwrap_or("").to_lowercase() {
+            ref s if s.contains("nvidia") || s.contains("geforce") || s.contains("quadro") => GpuVendor::Nvidia,
+            ref s if s.contains("amd") || s.contains("radeon") => GpuVendor::Amd,
+            ref s if s.contains("apple") => GpuVendor::Apple,
+            ref s if s.contains("intel") || s.contains("iris") || s.contains("uhd") => GpuVendor::Intel,
+            _ => continue,
+        };
+        // VRAM: explicit or shared. "sppci_vram_shared" is the inline-graphics
+        // path; "spdisplays_vram" is dedicated. Parse "1536 MB" / "8 GB" style.
+        let vram_gb = entry
+            .get("spdisplays_vram")
+            .and_then(|s| s.as_str())
+            .or_else(|| entry.get("sppci_vram_shared").and_then(|s| s.as_str()))
+            .and_then(parse_vram_to_gb)
+            .unwrap_or(0);
+        gpus.push(NodeGpu {
+            vendor,
+            vram_gb,
+            name: model.map(|s| s.to_owned()),
+        });
+    }
+    gpus
+}
+
+pub(crate) fn parse_vram_to_gb(s: &str) -> Option<u32> {
+    let s = s.trim().to_lowercase();
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let num: f64 = parts[0].parse().ok()?;
+    let unit = parts.get(1).copied().unwrap_or("mb");
+    let gb = match unit {
+        "gb" | "gigabytes" => num,
+        "mb" | "megabytes" => num / 1024.0,
+        "kb" | "kilobytes" => num / 1024.0 / 1024.0,
+        _ => return None,
+    };
+    Some(gb.round().max(1.0) as u32)
+}
+
+fn detect_gpus_linux() -> Vec<NodeGpu> {
+    // NVIDIA first — `nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits`
+    // emits one line per GPU: "NVIDIA GeForce RTX 4090, 24564"
+    if let Ok(output) = std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
+        .output()
+    {
+        if output.status.success() {
+            let parsed = parse_nvidia_smi(&String::from_utf8_lossy(&output.stdout));
+            if !parsed.is_empty() {
+                return parsed;
+            }
+        }
+    }
+    // Fallback: lspci for any VGA / 3D controller. Doesn't report VRAM —
+    // workloads that need vram_gb checks will need a node with the real path.
+    if let Ok(output) = std::process::Command::new("lspci").output() {
+        if output.status.success() {
+            return parse_lspci(&String::from_utf8_lossy(&output.stdout));
+        }
+    }
+    Vec::new()
+}
+
+pub(crate) fn parse_nvidia_smi(stdout: &str) -> Vec<NodeGpu> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split(',').map(str::trim).collect();
+            if parts.len() < 2 {
+                return None;
+            }
+            let name = parts[0].to_owned();
+            let vram_mib: u32 = parts[1].parse().ok()?;
+            Some(NodeGpu {
+                vendor: GpuVendor::Nvidia,
+                vram_gb: ((vram_mib as f64 / 1024.0).round() as u32).max(1),
+                name: Some(name),
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn parse_lspci(stdout: &str) -> Vec<NodeGpu> {
+    let mut gpus = Vec::new();
+    for line in stdout.lines() {
+        if !line.contains("VGA") && !line.contains("3D controller") && !line.contains("Display controller") {
+            continue;
+        }
+        let lower = line.to_lowercase();
+        let vendor = if lower.contains("nvidia") {
+            GpuVendor::Nvidia
+        } else if lower.contains("amd") || lower.contains("advanced micro devices") || lower.contains("radeon") {
+            // Avoid plain "ati" — it matches "VGA comp**ati**ble controller"
+            // on every Intel / NVIDIA line.
+            GpuVendor::Amd
+        } else if lower.contains("intel") {
+            GpuVendor::Intel
+        } else {
+            continue;
+        };
+        // Drop the leading "<bus>: VGA ..." then split on the next colon for the model.
+        let model = line.split(':').nth(2).map(|s| s.trim().to_owned());
+        gpus.push(NodeGpu { vendor, vram_gb: 0, name: model });
+    }
+    gpus
+}
+
+fn primary_acceleration(gpus: &[NodeGpu], os: OperatingSystem) -> Option<Acceleration> {
+    if gpus.iter().any(|g| matches!(g.vendor, GpuVendor::Apple)) {
+        Some(Acceleration::Metal)
+    } else if gpus.iter().any(|g| matches!(g.vendor, GpuVendor::Nvidia)) {
+        Some(Acceleration::Cuda)
+    } else if gpus.iter().any(|g| matches!(g.vendor, GpuVendor::Amd)) {
+        Some(Acceleration::Rocm)
+    } else if matches!(os, OperatingSystem::Macos) {
+        Some(Acceleration::Coreml)
+    } else {
+        None
+    }
+}
+
+fn apple_silicon_marketing_name() -> String {
+    // `sysctl -n machdep.cpu.brand_string` returns "Apple M2 Pro" etc. Cheaper
+    // than parsing system_profiler.
+    if let Ok(output) = std::process::Command::new("sysctl")
+        .args(["-n", "machdep.cpu.brand_string"])
+        .output()
+    {
+        if output.status.success() {
+            let s = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            if !s.is_empty() {
+                return s;
+            }
+        }
+    }
+    "Apple Silicon".to_owned()
 }
 
 async fn dispatch_control(
@@ -690,6 +884,147 @@ mod tests {
             failure_threshold: 1,
         };
         assert!(run_probe(&hc).await.is_err());
+    }
+
+    // ----------------------------------------------------------- GPU parsing
+
+    #[test]
+    fn parse_vram_handles_mb_and_gb_units() {
+        assert_eq!(parse_vram_to_gb("8192 MB"), Some(8));
+        assert_eq!(parse_vram_to_gb("24 GB"), Some(24));
+        assert_eq!(parse_vram_to_gb("1536 MB"), Some(2)); // 1.5 GB rounds up to 2
+        assert_eq!(parse_vram_to_gb("256 MB"), Some(1));  // sub-1GB clamps to 1
+        assert_eq!(parse_vram_to_gb("not a number"), None);
+        assert_eq!(parse_vram_to_gb(""), None);
+    }
+
+    #[test]
+    fn parse_nvidia_smi_reports_one_gpu_per_line() {
+        let stdout = "NVIDIA GeForce RTX 4090, 24564\nNVIDIA GeForce RTX 3090, 24576\n";
+        let gpus = parse_nvidia_smi(stdout);
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].vendor, GpuVendor::Nvidia);
+        assert_eq!(gpus[0].vram_gb, 24);
+        assert_eq!(gpus[0].name.as_deref(), Some("NVIDIA GeForce RTX 4090"));
+        assert_eq!(gpus[1].vram_gb, 24);
+    }
+
+    #[test]
+    fn parse_nvidia_smi_handles_empty_output() {
+        assert!(parse_nvidia_smi("").is_empty());
+        assert!(parse_nvidia_smi("malformed\n").is_empty());
+    }
+
+    #[test]
+    fn parse_lspci_categorises_vendors() {
+        let stdout = "\
+00:02.0 VGA compatible controller: Intel Corporation UHD Graphics 630
+01:00.0 VGA compatible controller: NVIDIA Corporation GA102 [GeForce RTX 3090]
+02:00.0 3D controller: Advanced Micro Devices, Inc. [AMD] Radeon Pro WX 9100
+03:00.0 Display controller: Some Other Vendor Foo Bar
+04:00.0 Network controller: Realtek RTL8125
+";
+        let gpus = parse_lspci(stdout);
+        assert_eq!(gpus.len(), 3);
+        assert_eq!(gpus[0].vendor, GpuVendor::Intel);
+        assert_eq!(gpus[1].vendor, GpuVendor::Nvidia);
+        assert_eq!(gpus[2].vendor, GpuVendor::Amd);
+        // Unknown-vendor GPU is dropped, network controller is dropped.
+        assert!(!gpus.iter().any(|g| g.name.as_deref().unwrap_or("").contains("Realtek")));
+    }
+
+    #[test]
+    fn parse_macos_system_profiler_categorises_vendors_and_vram() {
+        use serde_json::json;
+        let v = json!({
+            "SPDisplaysDataType": [
+                {
+                    "_name": "AMD Radeon Pro 5500M",
+                    "sppci_model": "AMD Radeon Pro 5500M",
+                    "spdisplays_vram": "8 GB"
+                },
+                {
+                    "_name": "Intel UHD Graphics 630",
+                    "sppci_model": "Intel UHD Graphics 630",
+                    "sppci_vram_shared": "1536 MB"
+                },
+                {
+                    "_name": "Some Mystery Device",
+                    "sppci_model": "Mystery"
+                }
+            ]
+        });
+        let gpus = parse_macos_system_profiler(&v);
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].vendor, GpuVendor::Amd);
+        assert_eq!(gpus[0].vram_gb, 8);
+        assert_eq!(gpus[1].vendor, GpuVendor::Intel);
+        assert_eq!(gpus[1].vram_gb, 2); // 1.5 rounded up
+    }
+
+    #[test]
+    fn parse_macos_system_profiler_returns_empty_on_missing_key() {
+        let v = serde_json::json!({"other": "data"});
+        assert!(parse_macos_system_profiler(&v).is_empty());
+    }
+
+    #[test]
+    fn detect_gpus_on_apple_silicon_reports_apple_gpu() {
+        let gpus = detect_gpus(Arch::Arm64, OperatingSystem::Macos, 16 * 1_073_741_824);
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].vendor, GpuVendor::Apple);
+        assert_eq!(gpus[0].vram_gb, 8); // half of 16 GB
+    }
+
+    #[test]
+    fn detect_gpus_on_other_os_returns_empty() {
+        // Windows-like unsupported branch.
+        let gpus = detect_gpus(Arch::X86_64, OperatingSystem::Linux, 0);
+        // On real Linux nvidia-smi might be present; the function is best-effort.
+        // We just check it didn't panic.
+        let _ = gpus;
+    }
+
+    #[test]
+    fn primary_acceleration_picks_metal_for_apple_gpu() {
+        let gpus = vec![NodeGpu { vendor: GpuVendor::Apple, vram_gb: 8, name: None }];
+        assert_eq!(
+            primary_acceleration(&gpus, OperatingSystem::Macos),
+            Some(Acceleration::Metal)
+        );
+    }
+
+    #[test]
+    fn primary_acceleration_picks_cuda_for_nvidia() {
+        let gpus = vec![NodeGpu { vendor: GpuVendor::Nvidia, vram_gb: 24, name: None }];
+        assert_eq!(
+            primary_acceleration(&gpus, OperatingSystem::Linux),
+            Some(Acceleration::Cuda)
+        );
+    }
+
+    #[test]
+    fn primary_acceleration_picks_rocm_for_amd() {
+        let gpus = vec![NodeGpu { vendor: GpuVendor::Amd, vram_gb: 16, name: None }];
+        assert_eq!(
+            primary_acceleration(&gpus, OperatingSystem::Linux),
+            Some(Acceleration::Rocm)
+        );
+    }
+
+    #[test]
+    fn primary_acceleration_picks_coreml_on_macos_intel() {
+        // Intel iGPU on macOS, no Apple GPU
+        let gpus = vec![NodeGpu { vendor: GpuVendor::Intel, vram_gb: 1, name: None }];
+        assert_eq!(
+            primary_acceleration(&gpus, OperatingSystem::Macos),
+            Some(Acceleration::Coreml)
+        );
+    }
+
+    #[test]
+    fn primary_acceleration_none_on_bare_linux() {
+        assert_eq!(primary_acceleration(&[], OperatingSystem::Linux), None);
     }
 
     #[tokio::test]

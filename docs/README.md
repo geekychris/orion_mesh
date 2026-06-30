@@ -39,6 +39,7 @@ flowchart LR
 | [debugging-processors.md](debugging-processors.md) | You want to attach a debugger to a Python or Java queue processor (debugpy / JDWP) |
 | [queues.md](queues.md) | You want to author or operate named queues — work vs topic, lifecycle, ls / describe / purge |
 | [runtime.md](runtime.md) | You want to know what `kind:` runtimes are wired up and why OrionMesh is native-first |
+| [multi-host.md](multi-host.md) | You want to run controller + agents on separate machines; multi-host topology + token plumbing |
 | [runner.md](runner.md) | You want to know how `scripts/run-md.py` works — tag conventions, drive flags, authoring runnable READMEs |
 | [architecture.md](architecture.md) | You're modifying the code or trying to understand how the pieces talk |
 | [design.md](design.md) | You're considering reversing a decision and want the trade-off recorded |

@@ -46,7 +46,7 @@ else
 fi
 
 mkdir -p "$BIN"
-BINS=(orion orion-agent orion-controller orion-ui orion-demo-pub orion-demo-sub)
+BINS=(orion orion-agent orion-controller orion-ui orion-mcp orion-demo-pub orion-demo-sub)
 
 echo "==> installing into $BIN"
 for b in "${BINS[@]}"; do

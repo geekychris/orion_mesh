@@ -76,12 +76,22 @@ Decisions are durable — when adding code, conform to these rather than re-liti
 | **Named queues** (`Queue` kind + `orion queue pub/sub/ls/describe/purge`) — JetStream-backed with declared `work` / `topic` semantics | ✅ ([docs/queues.md](docs/queues.md)) |
 | **`orion gen`** YAML builder for Queue / Service / Task / Schedule / **Processor scaffolder** (Python + Java debug-attach support) | ✅ |
 | **Polyglot processor templates** with debugger attach (debugpy / JDWP) | ✅ ([examples/10-queues/](examples/10-queues/), [docs/debugging-processors.md](docs/debugging-processors.md)) |
-| Reconciler (compare desired vs observed → produce control events automatically) | ❌ Phase 5 |
-| Full scheduler (filter + score + place across multiple nodes — current heuristic is "first observed node") | ❌ Phase 5 |
-| Find API (`POST /v1/find` with capability selector) | ❌ Phase 4 |
-| Docker / Python / Java / Node / Spark / LLM / HA / Wasm runtime adapters | ❌ Phase 5+ |
-| Service health probe loop (publish to `orion.service.health`) | ❌ Phase 5 |
-| MCP server (`orion-mcp`) | 🟡 crate exists, only declares planned tool names |
+| **Reconciler** (re-dispatch crashed Services honouring `restart_policy`; health-threshold-triggered restart) | ✅ ([crates/orion-controller/src/decisions.rs](crates/orion-controller/src/decisions.rs)) |
+| **Multi-node scheduler** (filter + score with `Placement::prefer` + running-load tiebreaker) | ✅ ([crates/orion-scheduler/src/lib.rs](crates/orion-scheduler/src/lib.rs)) |
+| **Service health probe loop** (HTTP / TCP / Exec; publishes to `orion.service.health`; `/v1/health/instances`) | ✅ |
+| **Find API** (`POST /v1/find` with capability selector + `orion find` CLI) | ✅ |
+| **Docker runtime adapter** (advertised when daemon reachable; full log + exit forwarding) | ✅ ([crates/orion-runtime/src/docker.rs](crates/orion-runtime/src/docker.rs)) |
+| **Wasm runtime adapter** (wasmtime + WASI preview1; feature-gated `--features wasm`) | ✅ ([crates/orion-runtime/src/wasm.rs](crates/orion-runtime/src/wasm.rs)) |
+| **Workflow / DAG runner** (Workflow kind; depends_on edges; continue_on_error) | ✅ |
+| **Persistent log archive** (SQLite mirror; `/v1/logs-archive/:kind/:name?since=TS`) | ✅ |
+| **Prometheus exporter** (`/metrics` endpoint) | ✅ |
+| **Backup / restore** (`orion snapshot {create,restore}`) | ✅ |
+| **MCP server** (`orion-mcp`) — JSON-RPC stdio, 13 tools mapped to REST | ✅ ([crates/orion-mcp/src/lib.rs](crates/orion-mcp/src/lib.rs)) |
+| **`orion tui`** — full-screen ratatui dashboard | ✅ |
+| **`orion up` / `orion doctor` / `orion bench` / `orion init`** | ✅ |
+| **GPU in `NodeInventory`** — agent populates from sysinfo; scheduler filters on it | ✅ |
+| Multi-host operation (NATS over WAN + per-host agents) | ✅ ([docs/multi-host.md](docs/multi-host.md)) |
+| Python / Java / Node / Spark / LLM / HA runtime adapters | ❌ Phase 6+ — wrap as `kind: native exec: python|java\|node\|...` for now |
 
 ## Local dev — how to actually run it
 
@@ -122,14 +132,16 @@ Differentiators:
 ## Roadmap
 
 - **Phase 1** — Agent + Discovery + Heartbeats + CLI ✅ substrate done
-- **Phase 2** — Native task execution + Logs/Metrics forwarders
-- **Phase 3** — Service registry + Capability lookup (Find API)
-- **Phase 4** — Docker runtime adapter
-- **Phase 5** — Desired-state reconciliation + scheduler dispatch
+- **Phase 2** — Native task execution + Logs/Metrics forwarders ✅ done
+- **Phase 3** — Service registry + Capability lookup (Find API) ✅ done
+- **Phase 4** — Docker runtime adapter ✅ done
+- **Phase 5** — Desired-state reconciliation + scheduler dispatch ✅ done
 - **Phase 6** — GitHub portfolio integration (Dev Portal peer link production-ready)
-- **Phase 7** — Home Assistant + Telegram + MCP (`orion-mcp` fleshes out)
+- **Phase 7** — Home Assistant + Telegram + MCP (`orion-mcp` fleshes out; MCP server ✅)
 
-When the user asks for a feature, check which phase it belongs to and flag if they're skipping ahead — earlier phases provide the substrate.
+Phases 1-5 closed June 2026. When the user asks for a feature, check which phase
+it belongs to and flag if they're skipping ahead — earlier phases provide the
+substrate.
 
 ## Working with the plan documents
 
