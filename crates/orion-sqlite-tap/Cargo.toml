@@ -15,6 +15,13 @@ path = "src/main.rs"
 [lib]
 path = "src/lib.rs"
 
+[dev-dependencies]
+async-nats.workspace = true
+futures.workspace = true
+tempfile = "3"
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "time", "net"] }
+
 [dependencies]
 orion-bus.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

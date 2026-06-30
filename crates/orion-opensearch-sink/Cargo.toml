@@ -15,6 +15,12 @@ path = "src/main.rs"
 [lib]
 path = "src/lib.rs"
 
+[dev-dependencies]
+tempfile = "3"
+axum = { workspace = true }
+async-nats = { workspace = true }
+futures = { workspace = true }
+
 [dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 reqwest.workspace = true

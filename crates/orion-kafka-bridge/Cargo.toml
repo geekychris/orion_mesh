@@ -15,6 +15,9 @@ path = "src/main.rs"
 [lib]
 path = "src/lib.rs"
 
+[dev-dependencies]
+tempfile = "3"
+
 [dependencies]
 orion-bus.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }

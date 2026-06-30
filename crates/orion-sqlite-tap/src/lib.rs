@@ -16,7 +16,9 @@ pub struct CdcEvent {
 /// against a safe-charset (table names from env are still trusted-input from
 /// the operator).
 pub fn build_select(table: &str, since: i64) -> String {
-    format!("SELECT rowid, * FROM \"{table}\" WHERE rowid > {since} ORDER BY rowid ASC LIMIT 1000")
+    // Alias rowid → _orion_rowid so sqlx can decode it by name (raw `rowid`
+    // returns ColumnNotFound when reading the row).
+    format!("SELECT rowid AS _orion_rowid, * FROM \"{table}\" WHERE rowid > {since} ORDER BY rowid ASC LIMIT 1000")
 }
 
 #[cfg(test)]
@@ -30,6 +32,7 @@ mod tests {
         assert!(sql.contains("rowid > 100"));
         assert!(sql.contains("ORDER BY rowid ASC"));
         assert!(sql.contains("LIMIT 1000"));
+        assert!(sql.contains("_orion_rowid"));
     }
 
     #[test]

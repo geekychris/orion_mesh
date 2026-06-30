@@ -3,9 +3,10 @@
 
 use anyhow::{Context, Result};
 use orion_sqlite_tap::{build_select, CdcEvent};
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::Column;
 use sqlx::Row;
+use std::str::FromStr;
 use std::time::Duration;
 
 #[tokio::main]
@@ -31,9 +32,14 @@ async fn main() -> Result<()> {
         .map(|v| matches!(v.as_str(), "1" | "true"))
         .unwrap_or(false);
 
+    // CDC tap is strictly read-only. Open with mode=ro so we don't deadlock
+    // with an upstream writer that holds the WAL lock.
+    let opts = SqliteConnectOptions::from_str(&db_url)?
+        .read_only(true)
+        .create_if_missing(false);
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
-        .connect(&db_url)
+        .connect_with(opts)
         .await?;
 
     let nc = orion_bus::client::connect(&nats_url, token.as_deref()).await?;
@@ -65,15 +71,21 @@ async fn main() -> Result<()> {
                 continue;
             }
         };
+        tracing::debug!(count = rows.len(), cursor, "polled");
         for r in rows {
-            let rowid: i64 = match r.try_get("rowid") {
+            // We aliased rowid as _orion_rowid in build_select so sqlx can pull
+            // it by name (raw "rowid" returns ColumnNotFound on the row decode).
+            let rowid: i64 = match r.try_get("_orion_rowid") {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::warn!(error = %e, "rowid extract failed");
+                    continue;
+                }
             };
             let mut obj = serde_json::Map::new();
             for col in r.columns() {
                 let name = col.name();
-                if name == "rowid" {
+                if name == "_orion_rowid" {
                     continue;
                 }
                 let val = column_to_json(&r, name);
@@ -88,6 +100,7 @@ async fn main() -> Result<()> {
             };
             if let Ok(payload) = serde_json::to_vec(&ev) {
                 let _ = js.publish(subject.clone(), payload.into()).await?.await;
+                tracing::debug!(rowid, "published");
             }
             cursor = rowid;
         }
