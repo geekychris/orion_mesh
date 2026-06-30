@@ -1050,7 +1050,7 @@ async fn workflow_tick_once(state: &AppState) -> Result<()> {
             ResourceBody::Workflow { spec, .. } => spec,
             _ => continue,
         };
-        let mut progress = state
+        let progress_snapshot = state
             .workflows
             .by_name
             .lock()
@@ -1066,52 +1066,62 @@ async fn workflow_tick_once(state: &AppState) -> Result<()> {
                 finished_at: None,
             })
             .clone();
-        if progress.finished_at.is_some() {
+        if progress_snapshot.finished_at.is_some() {
             continue;
         }
 
-        // Apply observed instance state to step status.
+        // Build task_states + current StepStatus map for the pure planner.
         let instances = state.instances.snapshot_all();
-        for step in &spec.steps {
-            let status = progress.steps.entry(step.name.clone()).or_insert(StepStatus::Pending);
-            if matches!(status, StepStatus::Pending) {
-                continue;
-            }
-            // If we marked it Running, look at the task's instance to see if it exited.
-            let task_inst = instances
-                .iter()
-                .find(|r| r.kind == "Task" && r.name == step.task.0);
-            if let Some(rec) = task_inst {
-                if rec.exit_kind.as_deref() == Some("succeeded") {
-                    *status = StepStatus::Succeeded;
-                } else if rec.exit_kind.as_deref() == Some("failed") {
-                    *status = StepStatus::Failed;
+        let mut task_states: std::collections::HashMap<String, decisions::TaskExitKind> = std::collections::HashMap::new();
+        for r in &instances {
+            if r.kind == "Task" {
+                if let Some(kind) = match r.exit_kind.as_deref() {
+                    Some("succeeded") => Some(decisions::TaskExitKind::Succeeded),
+                    Some("failed") => Some(decisions::TaskExitKind::Failed),
+                    _ => None,
+                } {
+                    task_states.insert(r.name.clone(), kind);
                 }
             }
         }
+        let current_status: std::collections::HashMap<String, decisions::StepStatus> = progress_snapshot
+            .steps
+            .iter()
+            .map(|(k, v)| {
+                let s = match v {
+                    StepStatus::Pending => decisions::StepStatus::Pending,
+                    StepStatus::Running => decisions::StepStatus::Running,
+                    StepStatus::Succeeded => decisions::StepStatus::Succeeded,
+                    StepStatus::Failed => decisions::StepStatus::Failed,
+                };
+                (k.clone(), s)
+            })
+            .collect();
 
-        // For each pending step whose deps are satisfied, dispatch the Task.
-        for step in &spec.steps {
-            let cur = *progress.steps.get(&step.name).unwrap_or(&StepStatus::Pending);
-            if !matches!(cur, StepStatus::Pending) {
-                continue;
-            }
-            let deps_ready = step.depends_on.iter().all(|d| {
-                let s = progress.steps.get(d).copied().unwrap_or(StepStatus::Pending);
-                matches!(s, StepStatus::Succeeded)
-                    || (spec.continue_on_error && matches!(s, StepStatus::Failed))
-            });
-            let blocked_by_failure = step.depends_on.iter().any(|d| {
-                let s = progress.steps.get(d).copied().unwrap_or(StepStatus::Pending);
-                !spec.continue_on_error && matches!(s, StepStatus::Failed)
-            });
-            if blocked_by_failure {
-                progress.steps.insert(step.name.clone(), StepStatus::Failed);
-                continue;
-            }
-            if !deps_ready {
-                continue;
-            }
+        let plan = decisions::advance_workflow(decisions::WorkflowInputs {
+            spec: &spec,
+            progress: &current_status,
+            task_states: &task_states,
+        });
+
+        // Rebuild local mutable progress to apply the plan.
+        let mut progress = progress_snapshot;
+        for (step, decision_status) in &plan.next_progress {
+            let mapped = match decision_status {
+                decisions::StepStatus::Pending => StepStatus::Pending,
+                decisions::StepStatus::Running => StepStatus::Running,
+                decisions::StepStatus::Succeeded => StepStatus::Succeeded,
+                decisions::StepStatus::Failed => StepStatus::Failed,
+            };
+            progress.steps.insert(step.clone(), mapped);
+        }
+
+        // Look up and dispatch each step the planner asked us to.
+        for step_name in &plan.dispatch {
+            let step = match spec.steps.iter().find(|s| &s.name == step_name) {
+                Some(s) => s,
+                None => continue,
+            };
             // Look up the referenced Task and dispatch it.
             let task = match state
                 .store
@@ -1168,12 +1178,9 @@ async fn workflow_tick_once(state: &AppState) -> Result<()> {
             }
         }
 
-        // Workflow done when every step is Succeeded or Failed.
-        let all_terminal = progress
-            .steps
-            .values()
-            .all(|s| matches!(s, StepStatus::Succeeded | StepStatus::Failed));
-        if all_terminal {
+        // The pure planner already computed `finished`; mirror it onto the
+        // wall-clock-stamped struct.
+        if plan.finished {
             progress.finished_at = Some(Utc::now());
         }
 

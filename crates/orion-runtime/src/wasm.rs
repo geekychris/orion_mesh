@@ -77,7 +77,7 @@ impl RuntimeAdapter for WasmAdapter {
             let wasi = wasi_builder.build_p1();
 
             let mut store = Store::new(&engine, wasi);
-            let result = (|| async {
+            let result: Result<(), String> = async {
                 let instance = linker
                     .instantiate_async(&mut store, &module)
                     .await
@@ -89,8 +89,8 @@ impl RuntimeAdapter for WasmAdapter {
                     .call_async(&mut store, ())
                     .await
                     .map_err(|e| format!("call _start: {e}"))?;
-                Ok::<(), String>(())
-            })()
+                Ok(())
+            }
             .await;
 
             let notice = match result {
@@ -140,5 +140,134 @@ fn kind_str(r: &Runtime) -> &'static str {
         Runtime::HomeAssistant { .. } => "homeassistant",
         Runtime::Wasm { .. } => "wasm",
         Runtime::Peer { .. } => "peer",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use tokio::sync::mpsc;
+
+    /// Compile a tiny WAT snippet to a temp .wasm file. WAT is the text form
+    /// of WebAssembly — easier than bundling a binary fixture. The module
+    /// exports `_start` which is what wasmtime-wasi looks for.
+    fn write_wasm_fixture(wat: &str, name: &str) -> std::path::PathBuf {
+        let bytes = wat::parse_str(wat).expect("wat compiles");
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("orion-wasm-test-{name}.wasm"));
+        std::fs::write(&path, &bytes).expect("write fixture");
+        path
+    }
+
+    /// A no-op WASI module — `_start` immediately returns.
+    const NOOP_WAT: &str = r#"
+        (module
+          (func (export "_start"))
+        )
+    "#;
+
+    #[tokio::test]
+    async fn wasm_adapter_rejects_non_wasm_runtime() {
+        let adapter = WasmAdapter::new().expect("engine");
+        let spec = LaunchSpec {
+            instance_id: Uuid::new_v4(),
+            name: "test".into(),
+            runtime: Runtime::Native {
+                exec: "/usr/bin/true".into(),
+                args: vec![],
+                env: BTreeMap::new(),
+            },
+            log_sink: None,
+            exit_sink: None,
+        };
+        let err = adapter.launch(spec).await.unwrap_err();
+        assert!(matches!(err, RuntimeError::Mismatch { .. }));
+    }
+
+    #[tokio::test]
+    async fn wasm_adapter_runs_noop_module_to_completion() {
+        let adapter = WasmAdapter::new().expect("engine");
+        let path = write_wasm_fixture(NOOP_WAT, "noop");
+        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel();
+        let id = Uuid::new_v4();
+        adapter
+            .launch(LaunchSpec {
+                instance_id: id,
+                name: "noop".into(),
+                runtime: Runtime::Wasm {
+                    module: path.to_string_lossy().into_owned(),
+                },
+                log_sink: None,
+                exit_sink: Some(exit_tx),
+            })
+            .await
+            .expect("launch");
+        let notice = tokio::time::timeout(std::time::Duration::from_secs(5), exit_rx.recv())
+            .await
+            .expect("exit notice arrived")
+            .expect("channel open");
+        assert_eq!(notice.instance_id, id);
+        assert_eq!(notice.exit_code, Some(0));
+        assert!(notice.message.contains("returned") || notice.message.contains("module"));
+    }
+
+    #[tokio::test]
+    async fn wasm_adapter_reports_failure_when_module_missing() {
+        let adapter = WasmAdapter::new().expect("engine");
+        let err = adapter
+            .launch(LaunchSpec {
+                instance_id: Uuid::new_v4(),
+                name: "missing".into(),
+                runtime: Runtime::Wasm {
+                    module: "/tmp/does/not/exist.wasm".into(),
+                },
+                log_sink: None,
+                exit_sink: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RuntimeError::Launch(_)));
+    }
+
+    /// A module that traps mid-execution (intentional unreachable instruction).
+    /// Confirms the adapter catches trap errors and reports a non-zero exit.
+    const TRAP_WAT: &str = r#"
+        (module
+          (func (export "_start")
+            unreachable
+          )
+        )
+    "#;
+
+    #[tokio::test]
+    async fn wasm_adapter_reports_failure_when_module_traps() {
+        let adapter = WasmAdapter::new().expect("engine");
+        let path = write_wasm_fixture(TRAP_WAT, "trap");
+        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel();
+        adapter
+            .launch(LaunchSpec {
+                instance_id: Uuid::new_v4(),
+                name: "trap".into(),
+                runtime: Runtime::Wasm {
+                    module: path.to_string_lossy().into_owned(),
+                },
+                log_sink: None,
+                exit_sink: Some(exit_tx),
+            })
+            .await
+            .expect("module compiles + instantiates ok");
+        let notice = tokio::time::timeout(std::time::Duration::from_secs(5), exit_rx.recv())
+            .await
+            .expect("exit notice arrived")
+            .expect("channel open");
+        assert_eq!(notice.exit_code, Some(1));
+        assert!(
+            notice.message.to_lowercase().contains("wasm error")
+                || notice.message.to_lowercase().contains("trap")
+                || notice.message.to_lowercase().contains("unreachable"),
+            "expected trap-related error message, got: {}",
+            notice.message
+        );
     }
 }

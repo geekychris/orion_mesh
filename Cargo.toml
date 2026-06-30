@@ -55,7 +55,7 @@ sysinfo = "0.32"
 cron = "0.12"
 
 wasmtime = { version = "26", default-features = false, features = ["cranelift", "runtime", "wat", "component-model", "async"] }
-wasmtime-wasi = { version = "26", default-features = false }
+wasmtime-wasi = { version = "26", default-features = false, features = ["preview1"] }
 
 ratatui = "0.28"
 crossterm = "0.28"

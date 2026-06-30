@@ -288,6 +288,67 @@ pub fn format_prometheus(m: &MetricsSnapshot) -> String {
     out
 }
 
+/// Pure planner that combines the store-fetched workflow + task-instance
+/// records into a per-workflow advance plan. Mirrors the impure path used by
+/// `workflow_tick_once` but takes plain inputs so it can be exercised against
+/// an in-memory store without NATS or the controller's loops.
+///
+/// Returns one entry per Workflow whose progress changed (or that has work to
+/// dispatch). Each entry carries the new step-status map, the steps to
+/// dispatch, and whether the workflow has finished.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkflowPlanEntry {
+    pub workflow: String,
+    pub next_progress: std::collections::HashMap<String, StepStatus>,
+    pub dispatch: Vec<DispatchSpec>,
+    pub finished: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DispatchSpec {
+    pub step_name: String,
+    pub task_name: String,
+}
+
+pub fn plan_all_workflows(
+    workflows: &[orion_types::Resource],
+    progress: &std::collections::HashMap<String, std::collections::HashMap<String, StepStatus>>,
+    task_states: &std::collections::HashMap<String, TaskExitKind>,
+) -> Vec<WorkflowPlanEntry> {
+    let mut out = Vec::new();
+    for wf in workflows {
+        let name = wf.metadata.name.0.clone();
+        let spec: orion_types::WorkflowSpec = match &wf.body {
+            orion_types::ResourceBody::Workflow { spec, .. } => spec.clone(),
+            _ => continue,
+        };
+        let empty_progress = std::collections::HashMap::new();
+        let current = progress.get(&name).unwrap_or(&empty_progress);
+        let plan = advance_workflow(WorkflowInputs {
+            spec: &spec,
+            progress: current,
+            task_states,
+        });
+        let dispatch = plan
+            .dispatch
+            .iter()
+            .filter_map(|step_name| {
+                spec.steps.iter().find(|s| &s.name == step_name).map(|s| DispatchSpec {
+                    step_name: step_name.clone(),
+                    task_name: s.task.0.clone(),
+                })
+            })
+            .collect();
+        out.push(WorkflowPlanEntry {
+            workflow: name,
+            next_progress: plan.next_progress,
+            dispatch,
+            finished: plan.finished,
+        });
+    }
+    out
+}
+
 // ============================================================ tests
 
 #[cfg(test)]
@@ -706,6 +767,121 @@ mod tests {
             val.parse::<f64>().unwrap_or_else(|_| panic!("non-numeric value: {line}"));
             assert!(!head.contains(' '), "metric name shouldn't contain raw space: {head}");
         }
+    }
+
+    // ---------------------------------------------------------------- workflow integration
+
+    use orion_store::Store;
+
+    async fn populate_workflow_fixture() -> Store {
+        let store = Store::in_memory().await.unwrap();
+        // Three Tasks: task-a, task-b, task-c.
+        for tname in ["task-a", "task-b", "task-c"] {
+            let task = orion_types::Resource::from_yaml(&format!(
+                "apiVersion: orionmesh.dev/v1\nkind: Task\nmetadata: {{ name: {tname} }}\nspec:\n  runtime: {{ kind: native, exec: /usr/bin/true }}\n"
+            ))
+            .unwrap();
+            store.upsert_resource(&task).await.unwrap();
+        }
+        // A workflow: a → b, then a → c (both depend on a).
+        let wf_yaml = r#"
+apiVersion: orionmesh.dev/v1
+kind: Workflow
+metadata: { name: integ-flow }
+spec:
+  steps:
+    - name: step-a
+      task: task-a
+    - name: step-b
+      task: task-b
+      depends_on: [step-a]
+    - name: step-c
+      task: task-c
+      depends_on: [step-a]
+"#;
+        let wf = orion_types::Resource::from_yaml(wf_yaml).unwrap();
+        store.upsert_resource(&wf).await.unwrap();
+        store
+    }
+
+    #[tokio::test]
+    async fn workflow_plumbing_first_tick_loads_and_plans_root_only() {
+        let store = populate_workflow_fixture().await;
+        let workflows = store.list_by_kind("Workflow").await.unwrap();
+        assert_eq!(workflows.len(), 1);
+        let progress = std::collections::HashMap::new();
+        let task_states = std::collections::HashMap::new();
+        let plans = plan_all_workflows(&workflows, &progress, &task_states);
+        assert_eq!(plans.len(), 1);
+        let p = &plans[0];
+        assert_eq!(p.workflow, "integ-flow");
+        assert_eq!(p.dispatch.len(), 1);
+        assert_eq!(p.dispatch[0].step_name, "step-a");
+        assert_eq!(p.dispatch[0].task_name, "task-a");
+        assert!(!p.finished);
+    }
+
+    #[tokio::test]
+    async fn workflow_plumbing_advances_when_task_succeeds() {
+        let store = populate_workflow_fixture().await;
+        let workflows = store.list_by_kind("Workflow").await.unwrap();
+        // Round 1: dispatch step-a (root). Save it as Running.
+        let mut progress = std::collections::HashMap::new();
+        let task_states_r1 = std::collections::HashMap::new();
+        let plans_r1 = plan_all_workflows(&workflows, &progress, &task_states_r1);
+        progress.insert("integ-flow".to_string(), plans_r1[0].next_progress.clone());
+
+        // Round 2: simulate task-a succeeded. Should dispatch step-b and step-c.
+        let mut task_states_r2 = std::collections::HashMap::new();
+        task_states_r2.insert("task-a".to_string(), TaskExitKind::Succeeded);
+        let plans_r2 = plan_all_workflows(&workflows, &progress, &task_states_r2);
+        let p = &plans_r2[0];
+        let dispatched: std::collections::HashSet<_> =
+            p.dispatch.iter().map(|d| d.step_name.clone()).collect();
+        assert!(dispatched.contains("step-b"));
+        assert!(dispatched.contains("step-c"));
+        assert_eq!(p.next_progress["step-a"], StepStatus::Succeeded);
+        assert_eq!(p.next_progress["step-b"], StepStatus::Running);
+        assert_eq!(p.next_progress["step-c"], StepStatus::Running);
+        assert!(!p.finished);
+    }
+
+    #[tokio::test]
+    async fn workflow_plumbing_finishes_when_all_tasks_complete() {
+        let store = populate_workflow_fixture().await;
+        let workflows = store.list_by_kind("Workflow").await.unwrap();
+        // Pre-populate progress as if step-b and step-c are running.
+        let mut progress = std::collections::HashMap::new();
+        let mut steps = std::collections::HashMap::new();
+        steps.insert("step-a".into(), StepStatus::Succeeded);
+        steps.insert("step-b".into(), StepStatus::Running);
+        steps.insert("step-c".into(), StepStatus::Running);
+        progress.insert("integ-flow".to_string(), steps);
+
+        let mut task_states = std::collections::HashMap::new();
+        task_states.insert("task-a".to_string(), TaskExitKind::Succeeded);
+        task_states.insert("task-b".to_string(), TaskExitKind::Succeeded);
+        task_states.insert("task-c".to_string(), TaskExitKind::Succeeded);
+
+        let plans = plan_all_workflows(&workflows, &progress, &task_states);
+        let p = &plans[0];
+        assert!(p.finished);
+        assert_eq!(p.dispatch.len(), 0);
+        assert_eq!(p.next_progress["step-b"], StepStatus::Succeeded);
+        assert_eq!(p.next_progress["step-c"], StepStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn workflow_plumbing_handles_no_workflows_in_store() {
+        let store = Store::in_memory().await.unwrap();
+        let workflows = store.list_by_kind("Workflow").await.unwrap();
+        assert!(workflows.is_empty());
+        let plans = plan_all_workflows(
+            &workflows,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+        );
+        assert!(plans.is_empty());
     }
 
     #[test]

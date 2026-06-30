@@ -557,3 +557,149 @@ fn runtime_adapter_name(r: &orion_types::Runtime) -> &'static str {
         Runtime::Peer { .. } => "peer",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::routing::get;
+    use axum::Router;
+    use orion_types::HealthCheck;
+    use tokio::net::TcpListener;
+
+    // ----------------------------------------------------------- HTTP probes
+
+    async fn ephemeral_http_server<F>(handler: axum::routing::MethodRouter) -> u16
+    where
+        F: Send + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new().route("/health", handler);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn http_probe_succeeds_on_2xx() {
+        let port = ephemeral_http_server::<()>(get(|| async { "ok" })).await;
+        // Loop probe needs 127.0.0.1; that's exactly where we bound.
+        let hc = HealthCheck::Http {
+            path: "/health".into(),
+            port,
+            interval_seconds: 1,
+            failure_threshold: 1,
+        };
+        run_probe(&hc).await.expect("2xx body");
+    }
+
+    #[tokio::test]
+    async fn http_probe_fails_on_5xx() {
+        let port = ephemeral_http_server::<()>(get(|| async {
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "boom")
+        }))
+        .await;
+        let hc = HealthCheck::Http {
+            path: "/health".into(),
+            port,
+            interval_seconds: 1,
+            failure_threshold: 1,
+        };
+        let err = run_probe(&hc).await.unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("500"), "expected 500 in error message, got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn http_probe_fails_when_no_one_listening() {
+        // Bind+drop to pick an unused port, then probe it. Race window is tiny;
+        // accept either "connection refused" or any other connect-time error.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let hc = HealthCheck::Http {
+            path: "/x".into(),
+            port,
+            interval_seconds: 1,
+            failure_threshold: 1,
+        };
+        assert!(run_probe(&hc).await.is_err());
+    }
+
+    // ----------------------------------------------------------- TCP probes
+
+    #[tokio::test]
+    async fn tcp_probe_succeeds_when_port_open() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Keep listener alive in the background; the probe just needs the connect to succeed.
+        tokio::spawn(async move {
+            // Accept once and drop the connection.
+            let _ = listener.accept().await;
+        });
+        let hc = HealthCheck::Tcp {
+            port,
+            interval_seconds: 1,
+            failure_threshold: 1,
+        };
+        run_probe(&hc).await.expect("tcp connect succeeds");
+    }
+
+    #[tokio::test]
+    async fn tcp_probe_fails_when_port_closed() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let hc = HealthCheck::Tcp {
+            port,
+            interval_seconds: 1,
+            failure_threshold: 1,
+        };
+        assert!(run_probe(&hc).await.is_err());
+    }
+
+    // ----------------------------------------------------------- Exec probes
+
+    #[tokio::test]
+    async fn exec_probe_succeeds_on_zero_exit() {
+        let hc = HealthCheck::Exec {
+            command: vec!["/usr/bin/true".into()],
+            interval_seconds: 1,
+            failure_threshold: 1,
+        };
+        run_probe(&hc).await.expect("/bin/true exits 0");
+    }
+
+    #[tokio::test]
+    async fn exec_probe_fails_on_nonzero_exit() {
+        let hc = HealthCheck::Exec {
+            command: vec!["/usr/bin/false".into()],
+            interval_seconds: 1,
+            failure_threshold: 1,
+        };
+        let err = run_probe(&hc).await.unwrap_err();
+        assert!(format!("{err}").to_lowercase().contains("exec"));
+    }
+
+    #[tokio::test]
+    async fn exec_probe_fails_on_missing_command() {
+        let hc = HealthCheck::Exec {
+            command: vec!["/this/binary/definitely/does/not/exist".into()],
+            interval_seconds: 1,
+            failure_threshold: 1,
+        };
+        assert!(run_probe(&hc).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_probe_fails_on_empty_command() {
+        let hc = HealthCheck::Exec {
+            command: vec![],
+            interval_seconds: 1,
+            failure_threshold: 1,
+        };
+        let err = run_probe(&hc).await.unwrap_err();
+        assert!(format!("{err}").contains("empty"));
+    }
+}

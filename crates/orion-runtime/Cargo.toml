@@ -8,6 +8,10 @@ publish.workspace = true
 repository.workspace = true
 description = "Runtime adapter trait + SecretResolver for OrionMesh agents"
 
+[features]
+default = []
+wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
+
 [dependencies]
 orion-types.workspace = true
 serde.workspace = true
@@ -18,6 +22,9 @@ tracing.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 uuid.workspace = true
+wasmtime = { workspace = true, optional = true }
+wasmtime-wasi = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+wat = "1"
