@@ -6,6 +6,7 @@
 //! 3. Re-export from [`messages::*`] and from the crate root.
 //! 4. Bump [`PROTOCOL_VERSION`] only on **incompatible** envelope shape changes.
 
+pub mod client;
 pub mod messages;
 pub mod topics;
 

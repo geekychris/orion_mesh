@@ -33,8 +33,8 @@ pub use specs::{
     CapabilityResourceSpec, DatasetAccess, DatasetLocation, DatasetSpec, HealthCheck,
     IntegrationSpec, JobSpec, ModelSpec, ModelVariant, NetworkSpec, NodeResources, NodeRole,
     NodeSpec, PolicySpec, PortProtocol, PortSpec, ProjectBuild, ProjectService, ProjectSpec,
-    RestartPolicy, RetryPolicy, RuntimeResourceSpec, ScheduleSpec, SecretSpec, ServiceSpec,
-    TaskSpec, VolumeSpec,
+    QueueSpec, QueueType, RestartPolicy, RetryPolicy, RuntimeResourceSpec, ScheduleSpec,
+    SecretSpec, ServiceSpec, TaskSpec, VolumeSpec,
 };
 pub use status::{Condition, ConditionStatus, Phase, Status};
 
@@ -48,6 +48,8 @@ pub enum ResourceError {
     Json(#[from] serde_json::Error),
     #[error("schedule must set exactly one of `task` or `taskTemplate`")]
     ScheduleAmbiguous,
+    #[error("queue name {0:?} is invalid: must match [a-zA-Z0-9_-]+ (no dots, slashes, spaces)")]
+    QueueNameInvalid(String),
 }
 
 impl Resource {
@@ -75,8 +77,36 @@ impl Resource {
                 _ => return Err(ResourceError::ScheduleAmbiguous),
             }
         }
+        if let ResourceBody::Queue { .. } = &self.body {
+            let name = &self.metadata.name.0;
+            if name.is_empty()
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                return Err(ResourceError::QueueNameInvalid(name.clone()));
+            }
+        }
         Ok(())
     }
+}
+
+/// Default subject for a named queue: `orion.queue.<name>`.
+pub fn default_queue_subject(name: &str) -> String {
+    format!("orion.queue.{name}")
+}
+
+/// Default JetStream stream name for a queue: uppercased + `-`/`.` → `_`.
+pub fn default_queue_stream(name: &str) -> String {
+    let mut s = String::with_capacity(name.len() + 12);
+    s.push_str("ORION_QUEUE_");
+    for c in name.chars() {
+        match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' => s.push(c.to_ascii_uppercase()),
+            _ => s.push('_'),
+        }
+    }
+    s
 }
 
 #[cfg(test)]

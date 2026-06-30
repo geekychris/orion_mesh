@@ -225,6 +225,8 @@ fn log_line_roundtrips() {
     assert_roundtrips(LogLine {
         node_id: nid(),
         service: ResourceName::from("svc"),
+        instance_id: None,
+        replica_index: 0,
         stream: LogStream::Stdout,
         line: "hello\n".into(),
     });
@@ -251,6 +253,7 @@ fn control_messages_roundtrip() {
         name: ResourceName::from("svc"),
         runtime: rt(),
         generation: 3,
+        replicas: 1,
     });
     assert_roundtrips(ControlStop {
         instance_id: Uuid::new_v4(),

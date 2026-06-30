@@ -1,0 +1,32 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: row-cruncher-debug
+  labels:
+    role: processor
+    queue: ps-rows
+    lang: python
+spec:
+  runtime:
+    kind: native
+    exec: python
+    args:
+    - '-m'
+    - debugpy
+    - '--listen'
+    - '0.0.0.0:5678'
+    - '--wait-for-client'
+    - examples/10-queues/python/processor.py
+    env:
+      NATS_URL: nats://127.0.0.1:4222
+      ORION_QUEUE_NAME: ps-rows
+      ORION_QUEUE_SUBJECT: orion.queue.ps-rows
+      ORION_QUEUE_STREAM: ORION_QUEUE_PS_ROWS
+      ORION_QUEUE_TYPE: work
+      ORION_QUEUE_GROUP: ps-rows-workers
+      ORION_DEBUG_PORT: 5678
+  restart_policy: on_failure
+  ports:
+  - name: debugpy
+    port: 5678
+    protocol: tcp

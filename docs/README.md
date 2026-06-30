@@ -28,12 +28,17 @@ flowchart LR
 
 | Doc | Start here when… |
 |---|---|
+| [quickstart.md](quickstart.md) | You just installed and want a 5-minute end-to-end test — pipes `ps -ef` through a queue into a Python service |
 | [installation.md](installation.md) | You want to build OrionMesh, configure auth, or run it as a system service |
 | [usage.md](usage.md) | You want to author resources, drive the CLI, or hit the HTTP API |
 | [examples.md](examples.md) | You want a guided tour of the `examples/` tree with copy-pasteable CLI recipes |
 | [skills.md](skills.md) | You want Claude (or scripts) to drive OrionMesh for you — apply, dispatch, schedule, tail logs |
 | [ipc.md](ipc.md) | You want to know how Services talk to each other, what `replicas:` does, fan-out vs queue-group vs JetStream, and how the polyglot demos work |
 | [diagnostics.md](diagnostics.md) | You want to debug or monitor — `/v1/diag/*` endpoints, UI Diag tab, `orion-diag` skill, stop-by-name |
+| [debugging.md](debugging.md) | You want to debug a workload, a component, or live cluster state — covers all three layers |
+| [debugging-processors.md](debugging-processors.md) | You want to attach a debugger to a Python or Java queue processor (debugpy / JDWP) |
+| [queues.md](queues.md) | You want to author or operate named queues — work vs topic, lifecycle, ls / describe / purge |
+| [runtime.md](runtime.md) | You want to know what `kind:` runtimes are wired up and why OrionMesh is native-first |
 | [runner.md](runner.md) | You want to know how `scripts/run-md.py` works — tag conventions, drive flags, authoring runnable READMEs |
 | [architecture.md](architecture.md) | You're modifying the code or trying to understand how the pieces talk |
 | [design.md](design.md) | You're considering reversing a decision and want the trade-off recorded |

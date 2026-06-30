@@ -104,7 +104,7 @@ runtime: { kind: wasm,   module: /opt/x.wasm }
 runtime: { kind: peer,   system: kqueue-default, ref: my-queue }
 ```
 
-Only **native** has a working adapter today — Docker / Python / Java / Node / Spark / LLM land in Phase 5 alongside the full scheduler. `peer` delegates to a peer system registered in Dev Portal (see [07-peers](../07-peers/)).
+Only **native** has a working adapter today — Docker / Python / Java / Node / Spark / LLM land in Phase 5 alongside the full scheduler. `peer` delegates to a peer system registered in Dev Portal (see [07-peers](../07-peers/)). **OrionMesh is native-first by design** — see [`docs/runtime.md`](../../docs/runtime.md) for why, and for how to launch Python / Java / Rust workloads natively today (you wrap the interpreter or jar via `kind: native exec: python|java args: [...]` — both `examples/09-ipc/polyglot/` and `examples/10-queues/` do this).
 
 ## The four files
 
@@ -128,7 +128,7 @@ restart_policy: always
 
 The shortest legal Service. No placement, no health, no capabilities. Just "run `sleep 3600` somewhere". Useful as the "is my dispatch path working?" smoke test.
 
-### `docker-nginx.yaml`
+### `docker-nginx.yaml` (illustrative — not runnable yet)
 
 ```yaml
 runtime: { kind: docker, image: nginx:1.27-alpine, env: { NGINX_HOST: example.local } }
@@ -150,7 +150,7 @@ placement:
 
 Demonstrates: Docker runtime, multi-replica, named ports (Phase-4 service discovery keys off `name`), HTTP health check, restart-on-failure, x86+ARM Linux placement.
 
-### `docker-redis.yaml`
+### `docker-redis.yaml` (illustrative — not runnable yet)
 
 ```yaml
 runtime:

@@ -42,7 +42,9 @@ Decisions are durable — when adding code, conform to these rather than re-liti
 
 ### Resource kinds
 
-13. **15 kinds in `ResourceBody`**: Node, Service, Task, Job, Schedule, Dataset, Model, Project, Secret, Volume, Network, Runtime (peer catalog), Capability (declared schema), Policy (stub), Integration (stub). Adding a kind: declare a `*Spec` in `specs.rs`, add the variant to `ResourceBody`, extend `kind_str()`, write a roundtrip test.
+13. **16 kinds in `ResourceBody`**: Node, Service, Task, Job, Schedule, Dataset, Model, Project, Secret, Volume, Network, **Queue**, Runtime (peer catalog), Capability (declared schema), Policy (stub), Integration (stub). Adding a kind: declare a `*Spec` in `specs.rs`, add the variant to `ResourceBody`, extend `kind_str()`, write a roundtrip test.
+
+13b. **`Queue`** is a named NATS/JetStream queue with declared semantics: `spec.type = work | topic`. Subject convention `orion.queue.<name>`, stream `ORION_QUEUE_<NAME_UPPER>` (overridable). Work mode load-balances rows across consumers sharing a durable; topic mode gives every consumer its own JetStream cursor so each sees every message. Queue name validation rejects `.`, `/`, whitespace. Concept docs: [docs/queues.md](docs/queues.md).
 14. **Service spec hardening**: `HealthCheck` (Http/Tcp/Exec), `RestartPolicy::{Always, OnFailure, Never}`, named `PortSpec { name, port, protocol }`. Default `RestartPolicy::Always`.
 15. **Dataset = `Vec<DatasetLocation { node, path, access }>`**; **Model = `Vec<ModelVariant { format, quant, memory_gb, context_window }>`**. Capability-aware scheduling reads these.
 16. **Schedule** supports both `task: <ResourceName>` and inline `task_template: TaskSpec`. Exactly one must be set — enforced by `Resource::validate()`, not serde.
@@ -69,6 +71,11 @@ Decisions are durable — when adding code, conform to these rather than re-liti
 | **Cron scheduler tick** (controller fires Schedule resources on their cron) | ✅ Phase B live |
 | **IPC demo** (`orion-demo-pub` ↔ `orion-demo-sub` over the mesh's own NATS broker) | ✅ Phase C live |
 | **UI Demo tab** with AttrMatch / capability / placement / bulk apply / IPC cards | ✅ |
+| **CLI parity** with the REST API — `orion {get,describe,apply,delete,dispatch,stop,restart,logs,instances,validate,run,schedule,diag,json,queue,gen}` | ✅ ([crates/orion-cli/src/cmd/](crates/orion-cli/src/cmd/)) |
+| **`orion json`** — column-header / TSV / regex stdin parser → ndjson stdout | ✅ |
+| **Named queues** (`Queue` kind + `orion queue pub/sub/ls/describe/purge`) — JetStream-backed with declared `work` / `topic` semantics | ✅ ([docs/queues.md](docs/queues.md)) |
+| **`orion gen`** YAML builder for Queue / Service / Task / Schedule / **Processor scaffolder** (Python + Java debug-attach support) | ✅ |
+| **Polyglot processor templates** with debugger attach (debugpy / JDWP) | ✅ ([examples/10-queues/](examples/10-queues/), [docs/debugging-processors.md](docs/debugging-processors.md)) |
 | Reconciler (compare desired vs observed → produce control events automatically) | ❌ Phase 5 |
 | Full scheduler (filter + score + place across multiple nodes — current heuristic is "first observed node") | ❌ Phase 5 |
 | Find API (`POST /v1/find` with capability selector) | ❌ Phase 4 |

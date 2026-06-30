@@ -332,6 +332,54 @@ pub struct VolumeSpec {
 }
 
 // ============================================================================
+// Queue — named NATS/JetStream queue with declared semantics
+// ============================================================================
+
+/// Delivery semantics for a [`QueueSpec`].
+///
+/// Both backends use the same JetStream stream; the difference is enforced on
+/// the *subscriber* side: a `work` queue requires consumers to share a durable
+/// name (so each message lands at exactly one consumer); a `topic` queue
+/// forbids it (so every subscriber sees every message via its own consumer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QueueType {
+    /// Broadcast — every subscriber receives every message.
+    Topic,
+    /// Work distribution — each message is delivered to exactly one of the
+    /// subscribers sharing the consumer durable.
+    #[default]
+    Work,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct QueueSpec {
+    #[serde(rename = "type")]
+    pub queue_type: QueueType,
+    /// Override the default `orion.queue.<name>` subject.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// Override the default `ORION_QUEUE_<NAME_UPPER>` stream name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<String>,
+    /// Maximum age of a message before JetStream drops it. None = unlimited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_age_seconds: Option<u64>,
+    /// Maximum messages retained on the stream. None = unlimited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_msgs: Option<u64>,
+    /// Maximum bytes retained on the stream. None = unlimited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+    /// JetStream stream replicas (durability factor). Default = 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replicas: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+// ============================================================================
 // Network
 // ============================================================================
 

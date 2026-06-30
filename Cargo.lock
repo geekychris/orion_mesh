@@ -1520,11 +1520,14 @@ dependencies = [
 name = "orion-bus"
 version = "0.1.0"
 dependencies = [
+ "async-nats",
  "chrono",
+ "futures",
  "orion-types",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "uuid",
 ]
 
@@ -1533,9 +1536,13 @@ name = "orion-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-nats",
+ "chrono",
  "clap",
+ "futures",
  "orion-bus",
  "orion-types",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -1562,6 +1569,7 @@ dependencies = [
  "orion-scheduler",
  "orion-store",
  "orion-types",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

@@ -408,6 +408,74 @@ spec:
 }
 
 // ============================================================================
+// Queue — named broker queue with declared semantics
+// ============================================================================
+
+#[test]
+fn queue_work_roundtrips() {
+    let yaml = r#"
+kind: Queue
+metadata: { name: ps-rows, labels: { tier: demo } }
+spec:
+  type: work
+  max_age_seconds: 3600
+  description: "ps -ef rows for batch crunching"
+"#;
+    let r = roundtrip(yaml);
+    r.validate().expect("queue should validate");
+    let ResourceBody::Queue { spec, .. } = r.body else { panic!() };
+    assert_eq!(spec.queue_type, QueueType::Work);
+    assert_eq!(spec.max_age_seconds, Some(3600));
+}
+
+#[test]
+fn queue_topic_roundtrips() {
+    let yaml = r#"
+kind: Queue
+metadata: { name: ps-broadcast }
+spec:
+  type: topic
+"#;
+    let r = roundtrip(yaml);
+    r.validate().expect("queue should validate");
+    let ResourceBody::Queue { spec, .. } = r.body else { panic!() };
+    assert_eq!(spec.queue_type, QueueType::Topic);
+}
+
+#[test]
+fn queue_default_type_is_work() {
+    let yaml = r#"
+kind: Queue
+metadata: { name: defaults }
+spec: {}
+"#;
+    let r = parse(yaml);
+    let ResourceBody::Queue { spec, .. } = r.body else { panic!() };
+    assert_eq!(spec.queue_type, QueueType::Work);
+}
+
+#[test]
+fn queue_rejects_dotted_name() {
+    let yaml = r#"
+kind: Queue
+metadata: { name: "bad.name" }
+spec: { type: work }
+"#;
+    let r = parse(yaml);
+    let err = r.validate().expect_err("dotted queue name must fail");
+    let s = format!("{err}");
+    assert!(s.contains("bad.name"), "error did not mention the name: {s}");
+}
+
+#[test]
+fn default_queue_subject_and_stream() {
+    use crate::{default_queue_stream, default_queue_subject};
+    assert_eq!(default_queue_subject("ps-rows"), "orion.queue.ps-rows");
+    assert_eq!(default_queue_stream("ps-rows"), "ORION_QUEUE_PS_ROWS");
+    assert_eq!(default_queue_stream("Mixed_Case"), "ORION_QUEUE_MIXED_CASE");
+}
+
+// ============================================================================
 // Capability + Selector — the matching layer
 // ============================================================================
 

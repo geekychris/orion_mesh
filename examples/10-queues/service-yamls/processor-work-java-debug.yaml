@@ -1,0 +1,29 @@
+apiVersion: orionmesh.dev/v1
+kind: Service
+metadata:
+  name: row-cruncher-java-debug
+  labels:
+    role: processor
+    queue: ps-rows
+    lang: java
+spec:
+  runtime:
+    kind: native
+    exec: java
+    args:
+    - '-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005'
+    - '-jar'
+    - examples/10-queues/java/target/orion-queue-processor.jar
+    env:
+      NATS_URL: nats://127.0.0.1:4222
+      ORION_QUEUE_NAME: ps-rows
+      ORION_QUEUE_SUBJECT: orion.queue.ps-rows
+      ORION_QUEUE_STREAM: ORION_QUEUE_PS_ROWS
+      ORION_QUEUE_TYPE: work
+      ORION_QUEUE_GROUP: ps-rows-workers
+      ORION_DEBUG_PORT: 5005
+  restart_policy: on_failure
+  ports:
+  - name: jdwp
+    port: 5005
+    protocol: tcp

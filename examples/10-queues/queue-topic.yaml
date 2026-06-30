@@ -1,0 +1,7 @@
+apiVersion: orionmesh.dev/v1
+kind: Queue
+metadata:
+  name: ps-broadcast
+spec:
+  type: topic
+  description: broadcast queue

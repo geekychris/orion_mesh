@@ -1,0 +1,8 @@
+apiVersion: orionmesh.dev/v1
+kind: Queue
+metadata:
+  name: ps-rows
+spec:
+  type: work
+  max_age_seconds: 3600
+  description: ps -ef rows

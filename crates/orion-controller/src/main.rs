@@ -646,7 +646,7 @@ async fn list_kinds() -> Json<KindsView> {
     Json(KindsView {
         kinds: &[
             "Node", "Service", "Task", "Job", "Schedule", "Dataset", "Model",
-            "Project", "Secret", "Volume", "Network", "Runtime", "Capability",
+            "Project", "Secret", "Volume", "Network", "Queue", "Runtime", "Capability",
             "Policy", "Integration",
         ],
     })

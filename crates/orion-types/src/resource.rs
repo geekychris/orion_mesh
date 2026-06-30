@@ -92,6 +92,11 @@ pub enum ResourceBody {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<Status>,
     },
+    Queue {
+        spec: QueueSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<Status>,
+    },
     /// Peer runtime catalog entry (OrionMesh, KQueue, ...).
     Runtime {
         spec: RuntimeResourceSpec,
@@ -130,6 +135,7 @@ impl ResourceBody {
             ResourceBody::Secret { .. } => "Secret",
             ResourceBody::Volume { .. } => "Volume",
             ResourceBody::Network { .. } => "Network",
+            ResourceBody::Queue { .. } => "Queue",
             ResourceBody::Runtime { .. } => "Runtime",
             ResourceBody::Capability { .. } => "Capability",
             ResourceBody::Policy { .. } => "Policy",

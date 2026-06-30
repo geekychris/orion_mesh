@@ -1,0 +1,2 @@
+nats-py>=2.7,<3
+debugpy>=1.8

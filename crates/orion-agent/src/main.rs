@@ -291,9 +291,18 @@ async fn dispatch_control(
         info!(?spec.kind, %spec.name, instance = %spec.instance_id, replicas, "control: run");
 
         let adapter_name = runtime_adapter_name(&spec.runtime);
-        let adapter = registry
-            .get(adapter_name)
-            .ok_or_else(|| anyhow::anyhow!("no adapter for kind '{adapter_name}'"))?;
+        let adapter = registry.get(adapter_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "runtime kind '{adapter_name}' has no adapter registered on this agent. \
+                 OrionMesh is native-first; only `kind: native` is implemented today \
+                 (docker / python / java / node / spark / llm / homeassistant / wasm \
+                 adapters are Phase 5+ on the roadmap — see CLAUDE.md). \
+                 For now: wrap any binary as `runtime: {{ kind: native, exec: <path>, args: [...] }}`. \
+                 Examples: examples/01-services/native-sleeper.yaml, \
+                 examples/10-queues/service-yamls/processor-work-python.yaml \
+                 (Python and Java *processes* launched via `kind: native exec: python|java`)."
+            )
+        })?;
 
         for idx in 0..replicas {
             // 0-th instance reuses the controller-supplied id; siblings get fresh ids
