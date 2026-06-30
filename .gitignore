@@ -15,3 +15,7 @@ Cargo.lock.bak
 # Maven build outputs
 **/target/
 examples/09-ipc/polyglot/java/dependency-reduced-pom.xml
+
+# Go binaries built in examples/
+examples/*/producer
+examples/*/consumer
