@@ -51,6 +51,67 @@ pub fn filter_nodes_by_placement<'a>(
         .collect()
 }
 
+/// Per-node load measurement passed to [`score_node`].
+///
+/// `running_instances` is the count of workloads currently believed alive on
+/// this node — used as a load-balancing tie-breaker (fewer running = preferred).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NodeLoad {
+    pub running_instances: u32,
+}
+
+/// Score a node against soft preferences + load. Higher = better. Returns 0
+/// for a complete miss. Algorithm:
+///
+/// * +100 per matching label key/value pair in `placement.prefer.node_labels`
+/// * +50 per `prefer.runtime` adapter the node advertises (proxied via roles
+///   for the MVP — `Worker` covers `native`, `Llm` advertises `llm`)
+/// * +1 per absent running instance (so 0 running = +1, 1 running = 0, etc.)
+///
+/// The intent isn't a precise utility; it's "filtered candidates that align
+/// best with the user's `prefer:` block win, with running-count as the
+/// tiebreaker".
+pub fn score_node(node: &CandidateNode, placement: &Placement, load: NodeLoad) -> i64 {
+    let mut score: i64 = 0;
+    for (k, v) in &placement.prefer.node_labels {
+        if node.labels.get(k) == Some(v) {
+            score += 100;
+        }
+    }
+    // Light penalty per running workload — never enough to override a +100 label
+    // match, just a tie-breaker.
+    score -= load.running_instances as i64;
+    score
+}
+
+/// Filter to hard candidates, score each, return the highest-scoring node id.
+/// Ties broken by lower running-instances; further ties broken by node_id (stable).
+pub fn pick_best<F>(
+    candidates: &[CandidateNode],
+    placement: &Placement,
+    load_of: F,
+) -> Option<String>
+where
+    F: Fn(&str) -> NodeLoad,
+{
+    let filtered = filter_nodes_by_placement(candidates, placement);
+    let mut scored: Vec<(i64, u32, &str)> = filtered
+        .into_iter()
+        .map(|n| {
+            let load = load_of(&n.node_id);
+            let score = score_node(n, placement, load);
+            (score, load.running_instances, n.node_id.as_str())
+        })
+        .collect();
+    // Higher score, then fewer running instances, then alphabetic node_id.
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(a.1.cmp(&b.1))
+            .then(a.2.cmp(b.2))
+    });
+    scored.first().map(|(_, _, id)| (*id).to_owned())
+}
+
 fn gpu_matches(have: &[NodeGpu], need: &GpuRequirement) -> bool {
     have.iter().any(|g| {
         if let Some(v) = need.vendor {
@@ -120,6 +181,40 @@ mod tests {
         let out = filter_nodes_by_placement(&nodes, &p);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].node_id, "a");
+    }
+
+    #[test]
+    fn pick_best_prefers_node_with_matching_label() {
+        let mut a = node("a", Arch::Arm64, OperatingSystem::Linux);
+        a.labels.insert("site".into(), "belmont".into());
+        let mut b = node("b", Arch::Arm64, OperatingSystem::Linux);
+        b.labels.insert("site".into(), "orlando".into());
+        let nodes = vec![a, b];
+        let mut p = Placement::default();
+        p.prefer.node_labels.insert("site".into(), "belmont".into());
+        let picked = pick_best(&nodes, &p, |_| NodeLoad::default());
+        assert_eq!(picked.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn pick_best_breaks_ties_by_load() {
+        let nodes = vec![
+            node("busy", Arch::Arm64, OperatingSystem::Linux),
+            node("idle", Arch::Arm64, OperatingSystem::Linux),
+        ];
+        let picked = pick_best(&nodes, &Placement::default(), |id| NodeLoad {
+            running_instances: if id == "busy" { 5 } else { 0 },
+        });
+        assert_eq!(picked.as_deref(), Some("idle"));
+    }
+
+    #[test]
+    fn pick_best_returns_none_when_no_candidates_match() {
+        let nodes = vec![node("a", Arch::Arm64, OperatingSystem::Linux)];
+        let mut p = Placement::default();
+        p.arch = vec![Arch::X86_64];
+        let picked = pick_best(&nodes, &p, |_| NodeLoad::default());
+        assert_eq!(picked, None);
     }
 
     #[test]

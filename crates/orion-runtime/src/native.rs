@@ -1,4 +1,4 @@
-use crate::{LaunchSpec, LaunchedInstance, OutStream, RuntimeAdapter, RuntimeError};
+use crate::{ExitNotice, LaunchSpec, LaunchedInstance, OutStream, RuntimeAdapter, RuntimeError};
 use async_trait::async_trait;
 use orion_types::Runtime;
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ use uuid::Uuid;
 /// Forks a binary as a child process. When `LaunchSpec.log_sink` is `Some`,
 /// stdout/stderr are piped and forwarded line-by-line to the sink.
 pub struct NativeAdapter {
-    children: Arc<Mutex<HashMap<Uuid, Child>>>,
+    children: Arc<Mutex<HashMap<Uuid, Arc<Mutex<Option<Child>>>>>>,
 }
 
 impl NativeAdapter {
@@ -68,7 +68,44 @@ impl RuntimeAdapter for NativeAdapter {
             }
         }
 
-        self.children.lock().unwrap().insert(spec.instance_id, child);
+        // Share ownership of the Child between the registry (so `stop` can kill
+        // it) and the wait-task (so we can `child.wait().await`). The Arc<Mutex>
+        // lets either side take ownership of the inner Child to call its async
+        // methods; whichever runs first wins.
+        let shared = Arc::new(Mutex::new(Some(child)));
+        self.children
+            .lock()
+            .unwrap()
+            .insert(spec.instance_id, shared.clone());
+
+        if let Some(exit_sink) = spec.exit_sink {
+            let id = spec.instance_id;
+            let children = self.children.clone();
+            tokio::spawn(async move {
+                let mut taken = match shared.lock().unwrap().take() {
+                    Some(c) => c,
+                    None => return, // `stop` already consumed it
+                };
+                let notice = match taken.wait().await {
+                    Ok(status) => ExitNotice {
+                        instance_id: id,
+                        exit_code: status.code(),
+                        message: match status.code() {
+                            Some(c) => format!("exited code={c}"),
+                            None => format!("killed (no exit code; status={status:?})"),
+                        },
+                    },
+                    Err(e) => ExitNotice {
+                        instance_id: id,
+                        exit_code: None,
+                        message: format!("wait error: {e}"),
+                    },
+                };
+                // Drop the registry entry once the child has been reaped.
+                children.lock().unwrap().remove(&id);
+                let _ = exit_sink.send(notice);
+            });
+        }
 
         Ok(LaunchedInstance {
             instance_id: spec.instance_id,
@@ -77,11 +114,15 @@ impl RuntimeAdapter for NativeAdapter {
     }
 
     async fn stop(&self, instance_id: Uuid) -> Result<(), RuntimeError> {
-        let mut child = match self.children.lock().unwrap().remove(&instance_id) {
+        let shared = match self.children.lock().unwrap().remove(&instance_id) {
             Some(c) => c,
             None => return Ok(()),
         };
-        child
+        let mut taken = match shared.lock().unwrap().take() {
+            Some(c) => c,
+            None => return Ok(()), // exit-task already consumed it
+        };
+        taken
             .kill()
             .await
             .map_err(|e| RuntimeError::Stop(e.to_string()))?;
@@ -144,6 +185,7 @@ mod tests {
                 env: Default::default(),
             },
             log_sink: None,
+            exit_sink: None,
         };
         let id = spec.instance_id;
         let launched = adapter.launch(spec).await.expect("launch /bin/sleep");
@@ -164,9 +206,37 @@ mod tests {
                 ports: vec![],
             },
             log_sink: None,
+            exit_sink: None,
         };
         let err = adapter.launch(spec).await.unwrap_err();
         assert!(matches!(err, RuntimeError::Mismatch { .. }));
+    }
+
+    #[tokio::test]
+    async fn native_adapter_reports_exit_when_sink_provided() {
+        let adapter = NativeAdapter::new();
+        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel();
+        let id = Uuid::new_v4();
+        adapter
+            .launch(LaunchSpec {
+                instance_id: id,
+                name: "exit-test".into(),
+                runtime: Runtime::Native {
+                    exec: "/bin/sh".into(),
+                    args: vec!["-c".into(), "exit 42".into()],
+                    env: Default::default(),
+                },
+                log_sink: None,
+                exit_sink: Some(exit_tx),
+            })
+            .await
+            .expect("launch");
+        let notice = tokio::time::timeout(std::time::Duration::from_secs(2), exit_rx.recv())
+            .await
+            .expect("got exit notice")
+            .expect("channel open");
+        assert_eq!(notice.instance_id, id);
+        assert_eq!(notice.exit_code, Some(42));
     }
 
     #[tokio::test]
@@ -183,6 +253,7 @@ mod tests {
                 env: Default::default(),
             },
             log_sink: Some(tx),
+            exit_sink: None,
         };
         adapter.launch(spec).await.unwrap();
 

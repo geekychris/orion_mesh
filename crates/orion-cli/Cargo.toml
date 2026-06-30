@@ -28,3 +28,5 @@ async-nats.workspace = true
 futures.workspace = true
 chrono.workspace = true
 regex = "1"
+ratatui.workspace = true
+crossterm.workspace = true

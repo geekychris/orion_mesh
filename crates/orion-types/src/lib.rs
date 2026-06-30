@@ -34,7 +34,7 @@ pub use specs::{
     IntegrationSpec, JobSpec, ModelSpec, ModelVariant, NetworkSpec, NodeResources, NodeRole,
     NodeSpec, PolicySpec, PortProtocol, PortSpec, ProjectBuild, ProjectService, ProjectSpec,
     QueueSpec, QueueType, RestartPolicy, RetryPolicy, RuntimeResourceSpec, ScheduleSpec,
-    SecretSpec, ServiceSpec, TaskSpec, VolumeSpec,
+    SecretSpec, ServiceSpec, TaskSpec, VolumeSpec, WorkflowSpec, WorkflowStep,
 };
 pub use status::{Condition, ConditionStatus, Phase, Status};
 

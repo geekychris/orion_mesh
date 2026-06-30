@@ -95,8 +95,15 @@ enum Cmd {
     /// Generate Resource YAML (queue, service, task, schedule, processor) on stdout.
     #[command(name = "gen", subcommand)]
     Gen(cmd::generate::Sub),
+    /// Capability-aware service discovery — `orion find -r llm.min_vram_gb='{"gte":24}'`.
+    Find(cmd::find::Args),
+    /// Snapshot every resource to a file / restore from one. `orion snapshot create -o cluster.yaml`.
+    #[command(subcommand)]
+    Snapshot(cmd::snapshot::Sub),
     /// Bring up a full local OrionMesh stack — NATS + controller + agent (+ UI).
     Up(cmd::up::Args),
+    /// Live full-screen terminal dashboard (nodes, services, queues).
+    Tui(cmd::tui::Args),
     /// Health check across broker / controller / agent.
     Doctor(cmd::doctor::Args),
     /// Benchmark queue throughput / latency.
@@ -146,7 +153,10 @@ async fn main() -> Result<()> {
         Cmd::Json(a) => cmd::json::run(&ctx, a).await,
         Cmd::Queue(s) => cmd::queue::run(&ctx, s).await,
         Cmd::Gen(s) => cmd::generate::run(&ctx, s).await,
+        Cmd::Find(a) => cmd::find::run(&ctx, a).await,
+        Cmd::Snapshot(s) => cmd::snapshot::run(&ctx, s).await,
         Cmd::Up(a) => cmd::up::run(&ctx, a).await,
+        Cmd::Tui(a) => cmd::tui::run(&ctx, a).await,
         Cmd::Doctor(a) => cmd::doctor::run(&ctx, a).await,
         Cmd::Bench(s) => cmd::bench::run(&ctx, s).await,
         Cmd::Init(s) => cmd::init::run(&ctx, s).await,

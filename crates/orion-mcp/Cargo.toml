@@ -15,3 +15,11 @@ serde_json.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+reqwest.workspace = true
+clap.workspace = true
+
+[[bin]]
+name = "orion-mcp"
+path = "src/bin/server.rs"

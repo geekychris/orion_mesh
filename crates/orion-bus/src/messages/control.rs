@@ -1,4 +1,4 @@
-use orion_types::{ResourceName, Runtime};
+use orion_types::{HealthCheck, ResourceName, Runtime};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -21,6 +21,10 @@ pub struct ControlRun {
     /// How many copies of the workload to launch. Defaults to 1.
     #[serde(default = "default_one_replica")]
     pub replicas: u32,
+    /// Optional health-check spec — when set, the agent runs the probe in a
+    /// loop and publishes ServiceHealth envelopes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_check: Option<HealthCheck>,
 }
 
 fn default_one_replica() -> u32 {

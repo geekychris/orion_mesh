@@ -541,6 +541,14 @@
         `on <code>orion.logs.&lt;node&gt;</code> and appear in the Logs panel below. ` +
         `The real scheduler (filtering + scoring + reconciliation) lands in Phase 5.`;
       wrap.append(note);
+    } else if (kind === "Queue") {
+      const note = el("div", { class: "phase-note" });
+      note.innerHTML =
+        `<strong>Named queues</strong> are NATS JetStream streams with declared <code>type: work | topic</code>. ` +
+        `Work mode load-balances rows across consumers sharing a durable; topic mode broadcasts via per-consumer cursors. ` +
+        `Live message + consumer counts surface through <code>orion queue ls</code> and the <code>/v1/diag/jetstream</code> endpoint. ` +
+        `See <a href="https://github.com/geekychris/orion_mesh/blob/main/docs/queues.md">docs/queues.md</a>.`;
+      wrap.append(note);
     }
 
     if (rows.length === 0) {

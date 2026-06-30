@@ -5,6 +5,7 @@ pub mod describe;
 pub mod diag;
 pub mod dispatch;
 pub mod doctor;
+pub mod find;
 pub mod generate;
 pub mod get;
 pub mod init;
@@ -14,7 +15,9 @@ pub mod logs;
 pub mod queue;
 pub mod run;
 pub mod schedules;
+pub mod snapshot;
 pub mod stop_restart;
+pub mod tui;
 pub mod up;
 pub mod validate;
 

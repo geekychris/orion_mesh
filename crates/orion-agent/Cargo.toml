@@ -31,3 +31,4 @@ uuid.workspace = true
 chrono.workspace = true
 sysinfo.workspace = true
 async-trait.workspace = true
+reqwest.workspace = true

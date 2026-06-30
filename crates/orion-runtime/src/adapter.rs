@@ -29,6 +29,22 @@ pub enum OutStream {
 /// to publish `LogLine` envelopes on NATS.
 pub type LogSink = tokio::sync::mpsc::UnboundedSender<(Uuid, OutStream, String)>;
 
+/// Exit notification. Adapters spawn a wait-task that sends one tuple per
+/// finished workload; the agent forwards it as a `TaskEvent` on NATS so the
+/// controller's reconciler can react (apply `restart_policy`, mark Failed,
+/// etc.).
+#[derive(Debug, Clone)]
+pub struct ExitNotice {
+    pub instance_id: Uuid,
+    /// `Some(code)` if the process exited normally; `None` if it was killed by
+    /// a signal (no exit code) or the wait itself failed.
+    pub exit_code: Option<i32>,
+    /// Brief message; for native this is "exited" / "signal 9" / "wait error: ..."
+    pub message: String,
+}
+
+pub type ExitSink = tokio::sync::mpsc::UnboundedSender<ExitNotice>;
+
 /// Everything an adapter needs to start a workload.
 #[derive(Debug, Clone)]
 pub struct LaunchSpec {
@@ -38,6 +54,9 @@ pub struct LaunchSpec {
     /// When `Some`, the adapter pipes stdout/stderr and forwards each line to
     /// the sink. When `None`, the child inherits the parent's stdio.
     pub log_sink: Option<LogSink>,
+    /// When `Some`, the adapter notifies on process exit (one tuple per
+    /// instance_id, when the wait completes).
+    pub exit_sink: Option<ExitSink>,
 }
 
 /// Handle returned by [`RuntimeAdapter::launch`].

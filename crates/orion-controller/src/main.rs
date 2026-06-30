@@ -160,6 +160,8 @@ struct AppState {
     logs: Arc<LogBuffer>,
     schedules: Arc<ScheduleRegistry>,
     instances: Arc<InstanceRegistry>,
+    health: Arc<HealthRegistry>,
+    workflows: Arc<WorkflowRegistry>,
     auth: AuthMode,
     started_at: DateTime<Utc>,
 }
@@ -186,6 +188,15 @@ struct InstanceRecord {
     first_seen_at: Option<DateTime<Utc>>,
     last_seen_at: Option<DateTime<Utc>>,
     line_count: u32,
+    /// When the agent reported a `TaskOutcome` for this instance. None = still
+    /// believed alive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exited_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i32>,
+    /// "succeeded" | "failed" | None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit_kind: Option<String>,
 }
 
 impl InstanceRegistry {
@@ -219,6 +230,9 @@ impl InstanceRegistry {
                 first_seen_at: None,
                 last_seen_at: None,
                 line_count: 0,
+                exited_at: None,
+                exit_code: None,
+                exit_kind: None,
             });
         let key = (kind.to_owned(), name.to_owned());
         let ids = by_workload.entry(key).or_default();
@@ -261,6 +275,9 @@ impl InstanceRegistry {
                 first_seen_at: Some(at),
                 last_seen_at: Some(at),
                 line_count: 1,
+                exited_at: None,
+                exit_code: None,
+                exit_kind: None,
             });
         let key = (kind.to_owned(), name.to_owned());
         let ids = by_workload.entry(key).or_default();
@@ -306,6 +323,45 @@ impl InstanceRegistry {
             .values()
             .find(|r| r.name == name)
             .map(|r| r.kind.clone())
+    }
+
+    /// Called when the agent reports a TaskOutcome. Marks the instance Exited
+    /// without removing it (so the reconciler can read the exit_code + kind
+    /// to decide whether to re-dispatch).
+    fn record_exit(&self, instance_id: Uuid, exit_code: i32, kind: &str) -> Option<InstanceRecord> {
+        let now = Utc::now();
+        let mut by_id = self.by_id.lock().unwrap();
+        by_id.get_mut(&instance_id).map(|r| {
+            r.exited_at = Some(now);
+            r.exit_code = Some(exit_code);
+            r.exit_kind = Some(kind.to_owned());
+            r.clone()
+        })
+    }
+
+    /// Count instances for (kind, name) that haven't reported an exit yet.
+    fn count_alive(&self, kind: &str, name: &str) -> u32 {
+        let by_workload = self.by_workload.lock().unwrap();
+        let ids = by_workload
+            .get(&(kind.to_owned(), name.to_owned()))
+            .cloned()
+            .unwrap_or_default();
+        let by_id = self.by_id.lock().unwrap();
+        ids.iter()
+            .filter_map(|i| by_id.get(i))
+            .filter(|r| r.exited_at.is_none())
+            .count() as u32
+    }
+
+    /// Remove an instance entirely (used after the reconciler re-dispatches
+    /// a slot — we don't need to keep the dead exit record around forever).
+    fn purge(&self, instance_id: Uuid) {
+        let mut by_id = self.by_id.lock().unwrap();
+        by_id.remove(&instance_id);
+        let mut by_workload = self.by_workload.lock().unwrap();
+        for ids in by_workload.values_mut() {
+            ids.retain(|i| *i != instance_id);
+        }
     }
 }
 
@@ -399,6 +455,8 @@ async fn main() -> Result<()> {
         logs: Arc::new(LogBuffer::default()),
         schedules: Arc::new(ScheduleRegistry::default()),
         instances: Arc::new(InstanceRegistry::default()),
+        health: Arc::new(HealthRegistry::default()),
+        workflows: Arc::new(WorkflowRegistry::default()),
         auth: auth.clone(),
         started_at: Utc::now(),
     };
@@ -427,8 +485,9 @@ async fn main() -> Result<()> {
         let nats = nats.clone();
         let logs = state.logs.clone();
         let instances = state.instances.clone();
+        let store = state.store.clone();
         async move {
-            if let Err(e) = subscribe_logs(nats, logs, instances).await {
+            if let Err(e) = subscribe_logs(nats, logs, instances, store).await {
                 warn!(error = ?e, "log subscriber exited");
             }
         }
@@ -437,6 +496,34 @@ async fn main() -> Result<()> {
         let state = state.clone();
         async move {
             scheduler_tick_loop(state).await;
+        }
+    });
+    tokio::spawn({
+        let state = state.clone();
+        async move {
+            if let Err(e) = subscribe_task_events(state).await {
+                warn!(error = ?e, "task.events subscriber exited");
+            }
+        }
+    });
+    tokio::spawn({
+        let state = state.clone();
+        async move {
+            if let Err(e) = subscribe_service_health(state).await {
+                warn!(error = ?e, "service.health subscriber exited");
+            }
+        }
+    });
+    tokio::spawn({
+        let state = state.clone();
+        async move {
+            reconcile_loop(state).await;
+        }
+    });
+    tokio::spawn({
+        let state = state.clone();
+        async move {
+            workflow_loop(state).await;
         }
     });
 
@@ -461,6 +548,11 @@ async fn main() -> Result<()> {
         .route("/v1/diag/system", get(diag_system))
         .route("/v1/diag/jetstream", get(diag_jetstream))
         .route("/v1/schedules/observed", get(list_schedule_observations))
+        .route("/v1/health/instances", get(list_health))
+        .route("/v1/find", post(find_services))
+        .route("/v1/logs-archive/:kind/:name", get(get_logs_archive))
+        .route("/metrics", get(prometheus_metrics))
+        .route("/v1/workflows/observed", get(list_workflow_progress))
         .layer(from_fn_with_state(auth, orion_auth::http::require_bearer))
         .route("/health", get(health))
         .layer(cors)
@@ -524,6 +616,7 @@ async fn subscribe_logs(
     client: Client,
     logs: Arc<LogBuffer>,
     instances: Arc<InstanceRegistry>,
+    store: Arc<Store>,
 ) -> Result<()> {
     // Wildcard: every per-node logs subject (orion.logs.<node>) feeds into here.
     let mut sub = client.subscribe(Topic::Logs.as_str().to_owned()).await?;
@@ -552,6 +645,24 @@ async fn subscribe_logs(
                     line: line.line.clone(),
                 };
                 logs.push(&kind, &line.service.0, entry);
+                // Best-effort archive write — never block the hot path on it.
+                let store_for_write = store.clone();
+                let archive_kind = kind.clone();
+                let archive_name = line.service.0.clone();
+                let archive_node = line.node_id.0.clone();
+                let archive_stream = stream.to_owned();
+                let archive_line = line.line.clone();
+                tokio::spawn(async move {
+                    let _ = store_for_write
+                        .append_log(
+                            &archive_kind,
+                            &archive_name,
+                            &archive_node,
+                            &archive_stream,
+                            &archive_line,
+                        )
+                        .await;
+                });
                 if let Some(iid) = line.instance_id {
                     instances.note_line(
                         iid,
@@ -646,8 +757,8 @@ async fn list_kinds() -> Json<KindsView> {
     Json(KindsView {
         kinds: &[
             "Node", "Service", "Task", "Job", "Schedule", "Dataset", "Model",
-            "Project", "Secret", "Volume", "Network", "Queue", "Runtime", "Capability",
-            "Policy", "Integration",
+            "Project", "Secret", "Volume", "Network", "Queue", "Workflow", "Runtime",
+            "Capability", "Policy", "Integration",
         ],
     })
 }
@@ -759,9 +870,9 @@ async fn get_instances(
 }
 
 /// Shared dispatch path used by POST /v1/dispatch and by the scheduler tick.
-/// Picks a node (currently: most recent live), generates the base instance_id,
-/// publishes a ControlRun envelope carrying `replicas`. The agent fans out
-/// into N copies (each with its own derived id).
+/// Picks a node via the placement-aware scheduler, generates the base
+/// instance_id, publishes a ControlRun envelope carrying `replicas`. The
+/// agent fans out into N copies (each with its own derived id).
 async fn dispatch_workload(
     state: &AppState,
     kind: WorkloadKind,
@@ -770,10 +881,26 @@ async fn dispatch_workload(
     generation: u64,
     replicas: u32,
 ) -> Result<(String, Uuid), ApiError> {
-    let node = state.node_id.get().ok_or_else(|| {
-        ApiError::bad_request("no live nodes — start an agent first")
-    })?;
+    let node = pick_node_for_dispatch(state, &name, &kind)
+        .await
+        .ok_or_else(|| ApiError::bad_request("no live nodes match the workload's placement"))?;
     let instance_id = Uuid::new_v4();
+    // Pull the health-check from the resource (Service only) so the agent can
+    // run periodic probes and publish ServiceHealth.
+    let health_check = if matches!(kind, WorkloadKind::Service) {
+        state
+            .store
+            .get_resource("Service", "_", &name.0)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| match r.body {
+                ResourceBody::Service { spec, .. } => spec.health,
+                _ => None,
+            })
+    } else {
+        None
+    };
     let envelope = Envelope::new(
         None,
         ControlRun {
@@ -783,6 +910,7 @@ async fn dispatch_workload(
             runtime,
             generation,
             replicas,
+            health_check,
         },
     );
     let payload = serde_json::to_vec(&envelope).expect("encode ControlRun");
@@ -795,9 +923,702 @@ async fn dispatch_workload(
     Ok((node, instance_id))
 }
 
+// ============================================================ scheduler
+
+/// Look up the workload's Placement (if it's a Service or Task with one) and
+/// pick the best live node via orion-scheduler. Returns None if no node passes
+/// the hard filter.
+async fn pick_node_for_dispatch(
+    state: &AppState,
+    name: &ResourceName,
+    kind: &WorkloadKind,
+) -> Option<String> {
+    // Pull placement from the resource (if present).
+    let resource_kind = match kind {
+        WorkloadKind::Service => "Service",
+        WorkloadKind::Task => "Task",
+    };
+    let placement = state
+        .store
+        .get_resource(resource_kind, "_", &name.0)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|r| match r.body {
+            ResourceBody::Service { spec, .. } => Some(spec.placement),
+            ResourceBody::Task { spec, .. } => Some(spec.placement),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    // Build candidate list from observed_node inventory.
+    let observed = state.store.list_nodes().await.ok().unwrap_or_default();
+    let cutoff = Utc::now() - chrono::Duration::seconds(30);
+    let mut candidates = Vec::new();
+    for n in &observed {
+        if n.last_seen_at < cutoff {
+            continue; // node hasn't heartbeat in 30s — treat as dead
+        }
+        let inv: Option<orion_bus::NodeInventory> = n
+            .inventory_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok());
+        let inv = match inv {
+            Some(i) => i,
+            None => continue,
+        };
+        candidates.push(orion_scheduler::CandidateNode {
+            node_id: n.node_id.clone(),
+            arch: inv.arch,
+            os: inv.os,
+            gpus: vec![], // NodeInventory doesn't carry GPUs today — Phase 5 follow-up
+            roles: vec![],
+            labels: Default::default(),
+        });
+    }
+
+    if candidates.is_empty() {
+        // Backwards-compat fallback: if no inventory has landed yet, use the
+        // most-recent heartbeat node so single-node dev still works.
+        return state.node_id.get();
+    }
+
+    let instances = state.instances.snapshot_all();
+    orion_scheduler::pick_best(&candidates, &placement, |id| orion_scheduler::NodeLoad {
+        running_instances: instances
+            .iter()
+            .filter(|r| r.node.as_deref() == Some(id) && r.exited_at.is_none())
+            .count() as u32,
+    })
+}
+
+// ============================================================ workflow runner
+
+/// Tracks per-workflow step state. In-memory — same lifecycle as the
+/// reconciler; rebuilds on controller restart from the resources + recent
+/// task.events.
+#[derive(Default)]
+struct WorkflowRegistry {
+    by_name: Mutex<HashMap<String, WorkflowProgress>>,
+}
+
+#[derive(Clone, Serialize)]
+struct WorkflowProgress {
+    /// step name → status ("pending" | "running" | "succeeded" | "failed")
+    steps: HashMap<String, StepStatus>,
+    started_at: DateTime<Utc>,
+    finished_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum StepStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+impl WorkflowRegistry {
+    fn snapshot(&self) -> HashMap<String, WorkflowProgress> {
+        self.by_name.lock().unwrap().clone()
+    }
+}
+
+const WORKFLOW_TICK_SECONDS: u64 = 3;
+
+async fn workflow_loop(state: AppState) {
+    let mut ticker = tokio::time::interval(Duration::from_secs(WORKFLOW_TICK_SECONDS));
+    ticker.tick().await;
+    loop {
+        ticker.tick().await;
+        if let Err(e) = workflow_tick_once(&state).await {
+            warn!(error = ?e, "workflow tick failed");
+        }
+    }
+}
+
+async fn workflow_tick_once(state: &AppState) -> Result<()> {
+    use orion_types::WorkflowSpec;
+
+    let workflows = state.store.list_by_kind("Workflow").await?;
+    for wf in workflows {
+        let name = wf.metadata.name.0.clone();
+        let spec: WorkflowSpec = match wf.body {
+            ResourceBody::Workflow { spec, .. } => spec,
+            _ => continue,
+        };
+        let mut progress = state
+            .workflows
+            .by_name
+            .lock()
+            .unwrap()
+            .entry(name.clone())
+            .or_insert_with(|| WorkflowProgress {
+                steps: spec
+                    .steps
+                    .iter()
+                    .map(|s| (s.name.clone(), StepStatus::Pending))
+                    .collect(),
+                started_at: Utc::now(),
+                finished_at: None,
+            })
+            .clone();
+        if progress.finished_at.is_some() {
+            continue;
+        }
+
+        // Apply observed instance state to step status.
+        let instances = state.instances.snapshot_all();
+        for step in &spec.steps {
+            let status = progress.steps.entry(step.name.clone()).or_insert(StepStatus::Pending);
+            if matches!(status, StepStatus::Pending) {
+                continue;
+            }
+            // If we marked it Running, look at the task's instance to see if it exited.
+            let task_inst = instances
+                .iter()
+                .find(|r| r.kind == "Task" && r.name == step.task.0);
+            if let Some(rec) = task_inst {
+                if rec.exit_kind.as_deref() == Some("succeeded") {
+                    *status = StepStatus::Succeeded;
+                } else if rec.exit_kind.as_deref() == Some("failed") {
+                    *status = StepStatus::Failed;
+                }
+            }
+        }
+
+        // For each pending step whose deps are satisfied, dispatch the Task.
+        for step in &spec.steps {
+            let cur = *progress.steps.get(&step.name).unwrap_or(&StepStatus::Pending);
+            if !matches!(cur, StepStatus::Pending) {
+                continue;
+            }
+            let deps_ready = step.depends_on.iter().all(|d| {
+                let s = progress.steps.get(d).copied().unwrap_or(StepStatus::Pending);
+                matches!(s, StepStatus::Succeeded)
+                    || (spec.continue_on_error && matches!(s, StepStatus::Failed))
+            });
+            let blocked_by_failure = step.depends_on.iter().any(|d| {
+                let s = progress.steps.get(d).copied().unwrap_or(StepStatus::Pending);
+                !spec.continue_on_error && matches!(s, StepStatus::Failed)
+            });
+            if blocked_by_failure {
+                progress.steps.insert(step.name.clone(), StepStatus::Failed);
+                continue;
+            }
+            if !deps_ready {
+                continue;
+            }
+            // Look up the referenced Task and dispatch it.
+            let task = match state
+                .store
+                .get_resource("Task", "_", &step.task.0)
+                .await
+                .ok()
+                .flatten()
+            {
+                Some(t) => t,
+                None => {
+                    warn!(workflow = %name, step = %step.name, task = %step.task, "workflow step references missing Task");
+                    progress.steps.insert(step.name.clone(), StepStatus::Failed);
+                    continue;
+                }
+            };
+            let runtime = match task.body {
+                ResourceBody::Task { spec, .. } => spec.runtime,
+                _ => None,
+            };
+            let runtime = match runtime {
+                Some(r) => r,
+                None => {
+                    warn!(workflow = %name, step = %step.name, "task has no runtime");
+                    progress.steps.insert(step.name.clone(), StepStatus::Failed);
+                    continue;
+                }
+            };
+            match dispatch_workload(
+                state,
+                WorkloadKind::Task,
+                step.task.clone(),
+                runtime,
+                0,
+                1,
+            )
+            .await
+            {
+                Ok((node, id)) => {
+                    info!(
+                        workflow = %name,
+                        step = %step.name,
+                        task = %step.task,
+                        instance = %id,
+                        node = %node,
+                        "workflow: step dispatched"
+                    );
+                    state.instances.record_dispatch(id, "Task", &step.task.0, Some(&node), 1);
+                    progress.steps.insert(step.name.clone(), StepStatus::Running);
+                }
+                Err(e) => {
+                    warn!(workflow = %name, step = %step.name, error = %e, "workflow dispatch failed");
+                    progress.steps.insert(step.name.clone(), StepStatus::Failed);
+                }
+            }
+        }
+
+        // Workflow done when every step is Succeeded or Failed.
+        let all_terminal = progress
+            .steps
+            .values()
+            .all(|s| matches!(s, StepStatus::Succeeded | StepStatus::Failed));
+        if all_terminal {
+            progress.finished_at = Some(Utc::now());
+        }
+
+        state
+            .workflows
+            .by_name
+            .lock()
+            .unwrap()
+            .insert(name.clone(), progress);
+    }
+    Ok(())
+}
+
 // ============================================================ scheduler tick
 
 const SCHEDULER_TICK_SECONDS: u64 = 5;
+const RECONCILE_TICK_SECONDS: u64 = 5;
+
+// ============================================================ task events
+
+async fn subscribe_task_events(state: AppState) -> Result<()> {
+    let subject = Topic::TaskEvents.as_str().to_owned();
+    let mut sub = state.nats.subscribe(subject.clone()).await?;
+    info!("subscribed to {subject}");
+    while let Some(msg) = sub.next().await {
+        let env: Envelope<orion_bus::TaskEvent> = match serde_json::from_slice(&msg.payload) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!(error = ?e, "malformed task.event envelope");
+                continue;
+            }
+        };
+        let ev = env.payload;
+        let (code, kind_str) = match ev.outcome {
+            orion_bus::TaskOutcome::Succeeded { exit_code } => (exit_code, "succeeded"),
+            orion_bus::TaskOutcome::Failed { exit_code, .. } => (exit_code, "failed"),
+            orion_bus::TaskOutcome::Cancelled { .. } => (-1, "cancelled"),
+            _ => continue,
+        };
+        if let Some(rec) = state.instances.record_exit(ev.task_id, code, kind_str) {
+            info!(
+                instance = %ev.task_id,
+                workload = %rec.name,
+                kind_str,
+                exit_code = code,
+                "task event observed"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// POST /v1/find — capability-aware service discovery.
+///
+/// Request body: a YAML/JSON CapabilitySelector. Returns the subset of
+/// Services whose advertised `capabilities:` match the selector.
+async fn find_services(
+    State(state): State<AppState>,
+    body: String,
+) -> Result<Json<Vec<Resource>>, ApiError> {
+    // Accept either YAML or JSON — serde_json handles both for plain map/value
+    // shapes; for richer YAML the apply endpoint sits one Resource layer up.
+    let selector: orion_types::CapabilitySelector = serde_json::from_str(&body)
+        .map_err(|e| ApiError::bad_request(format!("selector parse (json): {e}")))?;
+    let services = state
+        .store
+        .list_by_kind("Service")
+        .await
+        .map_err(ApiError::store)?;
+    let mut out = Vec::new();
+    for svc in services {
+        let advertised = match &svc.body {
+            ResourceBody::Service { spec, .. } => spec.capabilities.clone(),
+            _ => continue,
+        };
+        if capabilities_match(&advertised, &selector) {
+            out.push(svc);
+        }
+    }
+    Ok(Json(out))
+}
+
+fn capabilities_match(
+    advertised: &[orion_types::Capability],
+    selector: &orion_types::CapabilitySelector,
+) -> bool {
+    use orion_types::AttrMatch;
+    for (cap_name, checks) in &selector.requirements {
+        let cap = match advertised.iter().find(|c| &c.name == cap_name) {
+            Some(c) => c,
+            None => return false,
+        };
+        for (attr_key, attr_match) in &checks.0 {
+            let actual = match cap.attributes.get(attr_key) {
+                Some(v) => v,
+                None => return false,
+            };
+            match attr_match {
+                AttrMatch::Equals(v) => {
+                    if actual != v {
+                        return false;
+                    }
+                }
+                AttrMatch::OneOf(values) => {
+                    if !values.iter().any(|v| v == actual) {
+                        return false;
+                    }
+                }
+                AttrMatch::Op(ops) => {
+                    if !attr_op_matches(ops, actual) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+fn attr_op_matches(op: &orion_types::AttrOp, actual: &serde_json::Value) -> bool {
+    if let Some(v) = &op.eq {
+        if actual != v {
+            return false;
+        }
+    }
+    if let Some(v) = &op.ne {
+        if actual == v {
+            return false;
+        }
+    }
+    let actual_num = actual.as_f64();
+    let cmp = |lhs: &Option<serde_json::Number>,
+               op: fn(f64, f64) -> bool|
+     -> bool {
+        match (lhs, actual_num) {
+            (Some(n), Some(a)) => n.as_f64().map_or(true, |x| op(a, x)),
+            (Some(_), None) => false,
+            (None, _) => true,
+        }
+    };
+    cmp(&op.gt, |a, x| a > x)
+        && cmp(&op.gte, |a, x| a >= x)
+        && cmp(&op.lt, |a, x| a < x)
+        && cmp(&op.lte, |a, x| a <= x)
+}
+
+#[derive(Deserialize)]
+struct ArchiveQuery {
+    #[serde(default)]
+    since: Option<String>,
+    #[serde(default = "default_archive_limit")]
+    limit: i64,
+}
+
+fn default_archive_limit() -> i64 {
+    1000
+}
+
+async fn get_logs_archive(
+    State(state): State<AppState>,
+    Path((kind, name)): Path<(String, String)>,
+    Query(q): Query<ArchiveQuery>,
+) -> Result<Json<Vec<orion_store::LogArchiveEntry>>, ApiError> {
+    let since = q
+        .since
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc));
+    let entries = state
+        .store
+        .read_logs(&kind, &name, since, q.limit)
+        .await
+        .map_err(ApiError::store)?;
+    Ok(Json(entries))
+}
+
+/// `/metrics` — Prometheus text exposition. Scrape from any Prometheus-compatible
+/// pull system (Prometheus itself, Grafana Agent, VictoriaMetrics vmagent).
+async fn list_workflow_progress(State(state): State<AppState>) -> Json<HashMap<String, WorkflowProgress>> {
+    Json(state.workflows.snapshot())
+}
+
+async fn prometheus_metrics(State(state): State<AppState>) -> String {
+    let mut out = String::with_capacity(2048);
+    let now_uptime = (Utc::now() - state.started_at).num_seconds().max(0);
+
+    let agents = state.store.list_nodes().await.unwrap_or_default();
+    let live_agents = {
+        let cutoff = Utc::now() - chrono::Duration::seconds(30);
+        agents.iter().filter(|n| n.last_seen_at >= cutoff).count()
+    };
+    let total_agents = agents.len();
+
+    let instances = state.instances.snapshot_all();
+    let alive = instances.iter().filter(|r| r.exited_at.is_none()).count();
+    let exited = instances.iter().filter(|r| r.exited_at.is_some()).count();
+    let failed = instances
+        .iter()
+        .filter(|r| r.exit_kind.as_deref() == Some("failed"))
+        .count();
+
+    let healthy = state
+        .health
+        .snapshot_all()
+        .values()
+        .filter(|h| h.status == "healthy")
+        .count();
+    let unhealthy = state
+        .health
+        .snapshot_all()
+        .values()
+        .filter(|h| h.status == "unhealthy")
+        .count();
+
+    let schedules = state.schedules.snapshot();
+    let total_fires: u32 = schedules.values().map(|o| o.fire_count).sum();
+
+    use std::fmt::Write;
+    let _ = writeln!(
+        out,
+        "# HELP orion_controller_uptime_seconds Seconds since controller start"
+    );
+    let _ = writeln!(out, "# TYPE orion_controller_uptime_seconds gauge");
+    let _ = writeln!(out, "orion_controller_uptime_seconds {now_uptime}");
+    let _ = writeln!(out, "# HELP orion_agents_total Agents the controller has seen ever");
+    let _ = writeln!(out, "# TYPE orion_agents_total gauge");
+    let _ = writeln!(out, "orion_agents_total {total_agents}");
+    let _ = writeln!(out, "# HELP orion_agents_live Agents whose last heartbeat was within 30s");
+    let _ = writeln!(out, "# TYPE orion_agents_live gauge");
+    let _ = writeln!(out, "orion_agents_live {live_agents}");
+    let _ = writeln!(out, "# HELP orion_instances_alive Workload instances believed alive");
+    let _ = writeln!(out, "# TYPE orion_instances_alive gauge");
+    let _ = writeln!(out, "orion_instances_alive {alive}");
+    let _ = writeln!(out, "# HELP orion_instances_exited Workload instances that have exited");
+    let _ = writeln!(out, "# TYPE orion_instances_exited counter");
+    let _ = writeln!(out, "orion_instances_exited {exited}");
+    let _ = writeln!(out, "# HELP orion_instances_failed Workload instances that exited non-zero");
+    let _ = writeln!(out, "# TYPE orion_instances_failed counter");
+    let _ = writeln!(out, "orion_instances_failed {failed}");
+    let _ = writeln!(out, "# HELP orion_health_status Instances reporting a health status");
+    let _ = writeln!(out, "# TYPE orion_health_status gauge");
+    let _ = writeln!(out, "orion_health_status{{status=\"healthy\"}} {healthy}");
+    let _ = writeln!(out, "orion_health_status{{status=\"unhealthy\"}} {unhealthy}");
+    let _ = writeln!(out, "# HELP orion_schedule_fires_total Total Schedule fires since controller start");
+    let _ = writeln!(out, "# TYPE orion_schedule_fires_total counter");
+    let _ = writeln!(out, "orion_schedule_fires_total {total_fires}");
+
+    out
+}
+
+async fn list_health(State(state): State<AppState>) -> Json<HashMap<String, HealthSnapshot>> {
+    let snap = state.health.snapshot_all();
+    Json(snap.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+}
+
+// ============================================================ service.health
+
+#[derive(Default)]
+struct HealthRegistry {
+    by_instance: Mutex<HashMap<Uuid, HealthSnapshot>>,
+}
+
+#[derive(Clone, Serialize)]
+struct HealthSnapshot {
+    service: String,
+    status: String,
+    consecutive_failures: u32,
+    last_at: DateTime<Utc>,
+    message: Option<String>,
+}
+
+impl HealthRegistry {
+    fn record(&self, instance_id: Uuid, snap: HealthSnapshot) {
+        self.by_instance.lock().unwrap().insert(instance_id, snap);
+    }
+    fn snapshot_all(&self) -> HashMap<Uuid, HealthSnapshot> {
+        self.by_instance.lock().unwrap().clone()
+    }
+}
+
+async fn subscribe_service_health(state: AppState) -> Result<()> {
+    let subject = Topic::ServiceHealth.as_str().to_owned();
+    let mut sub = state.nats.subscribe(subject.clone()).await?;
+    info!("subscribed to {subject}");
+    while let Some(msg) = sub.next().await {
+        let env: Envelope<orion_bus::ServiceHealth> = match serde_json::from_slice(&msg.payload) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!(error = ?e, "malformed service.health envelope");
+                continue;
+            }
+        };
+        let h = env.payload;
+        let instance_id = match Uuid::parse_str(&h.instance_id) {
+            Ok(u) => u,
+            Err(_) => continue,
+        };
+        let status = format!("{:?}", h.status).to_lowercase();
+        state.health.record(
+            instance_id,
+            HealthSnapshot {
+                service: h.service.0.clone(),
+                status,
+                consecutive_failures: h.consecutive_failures,
+                last_at: Utc::now(),
+                message: h.message,
+            },
+        );
+    }
+    Ok(())
+}
+
+// ============================================================ reconciler
+
+async fn reconcile_loop(state: AppState) {
+    let mut ticker = tokio::time::interval(Duration::from_secs(RECONCILE_TICK_SECONDS));
+    ticker.tick().await; // skip immediate fire
+    loop {
+        ticker.tick().await;
+        if let Err(e) = reconcile_once(&state).await {
+            warn!(error = ?e, "reconcile tick failed");
+        }
+    }
+}
+
+/// One reconciliation pass.
+///
+/// For every Service the store knows about:
+///   1. Count alive instances (exited_at == None).
+///   2. If alive < `replicas` and the service has never been dispatched, dispatch
+///      it (the agent fan-out covers the replica count).
+///   3. For each Exited instance:
+///        - `restart_policy: Always`     → re-dispatch + purge the dead record
+///        - `restart_policy: OnFailure`  → re-dispatch iff exit_code != 0
+///        - `restart_policy: Never`      → leave the record alone (Failed terminal state)
+///
+/// Tasks are NOT auto-restarted by the reconciler — Task is a one-shot resource,
+/// re-firing it is the Schedule subsystem's job.
+async fn reconcile_once(state: &AppState) -> Result<()> {
+    use orion_types::{RestartPolicy, ServiceSpec};
+
+    let services = state.store.list_by_kind("Service").await?;
+
+    for svc in services {
+        let name = svc.metadata.name.0.clone();
+        let generation = svc.metadata.generation;
+        let (spec, runtime): (ServiceSpec, _) = match &svc.body {
+            ResourceBody::Service { spec, .. } => {
+                let rt = match &spec.runtime {
+                    Some(r) => r.clone(),
+                    None => continue, // nothing to launch
+                };
+                (spec.clone(), rt)
+            }
+            _ => continue,
+        };
+        let desired = spec.replicas.unwrap_or(1).max(1);
+        let alive = state.instances.count_alive("Service", &name);
+
+        // Inspect every dead replica and classify it as "should restart" or
+        // "terminal" (Never policy, or OnFailure + exit_code==0).
+        let dead: Vec<InstanceRecord> = {
+            let by_workload = state.instances.by_workload.lock().unwrap();
+            let ids = by_workload
+                .get(&("Service".to_owned(), name.clone()))
+                .cloned()
+                .unwrap_or_default();
+            let by_id = state.instances.by_id.lock().unwrap();
+            ids.iter()
+                .filter_map(|i| by_id.get(i))
+                .filter(|r| r.exited_at.is_some())
+                .cloned()
+                .collect()
+        };
+        let mut want_restart = 0u32;
+        let mut terminal = 0u32;
+        for d in &dead {
+            let restart = match spec.restart_policy {
+                RestartPolicy::Always => true,
+                RestartPolicy::OnFailure => d.exit_code.unwrap_or(0) != 0,
+                RestartPolicy::Never => false,
+            };
+            if restart {
+                want_restart += 1;
+                state.instances.purge(d.instance_id);
+                info!(
+                    workload = %name,
+                    instance = %d.instance_id,
+                    exit_code = ?d.exit_code,
+                    policy = ?spec.restart_policy,
+                    "reconciler: restarting replica"
+                );
+            } else {
+                terminal += 1;
+            }
+        }
+
+        // "Missing" = desired - alive - terminal. Slots that terminated under
+        // a no-restart policy count as filled (the workload is complete on
+        // that slot — re-running it would violate the user's policy).
+        let alive_or_terminal = alive.saturating_add(terminal);
+        let missing = desired.saturating_sub(alive_or_terminal);
+        let to_launch = missing + want_restart;
+        if to_launch == 0 {
+            continue;
+        }
+
+        // Phase-5 placeholder: re-dispatch the whole Service. The agent
+        // already fans out into `replicas` copies. Future revision should
+        // dispatch *just* the missing slots, but that needs richer per-slot
+        // tracking. For now: only re-dispatch if NO alive replicas remain
+        // (the common "everything crashed" case).
+        if alive == 0 && terminal < desired {
+            info!(
+                workload = %name,
+                desired,
+                "reconciler: re-dispatching Service (no alive replicas)"
+            );
+            match dispatch_workload(
+                state,
+                WorkloadKind::Service,
+                ResourceName::from(name.as_str()),
+                runtime,
+                generation.unwrap_or(0),
+                desired,
+            )
+            .await
+            {
+                Ok((node, id)) => {
+                    state.instances.record_dispatch(id, "Service", &name, Some(&node), desired);
+                }
+                Err(e) => warn!(workload = %name, error = %e, "reconcile dispatch failed"),
+            }
+        } else if to_launch > 0 {
+            // Some replicas alive, others dead — Phase 5 partial-fanout work.
+            // Log so we know the reconciler noticed without doing the wrong thing.
+            warn!(
+                workload = %name,
+                alive,
+                desired,
+                want_restart,
+                "reconciler: partial under-provision not yet supported (Phase 5 follow-up)"
+            );
+        }
+    }
+    Ok(())
+}
 
 async fn scheduler_tick_loop(state: AppState) {
     let mut ticker = tokio::time::interval(Duration::from_secs(SCHEDULER_TICK_SECONDS));
@@ -1401,9 +2222,16 @@ async fn diag_jetstream(
 
 // ============================================================ error mapping
 
+#[derive(Debug)]
 struct ApiError {
     status: StatusCode,
     message: String,
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.status, self.message)
+    }
 }
 
 impl ApiError {

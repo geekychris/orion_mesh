@@ -254,6 +254,7 @@ fn control_messages_roundtrip() {
         runtime: rt(),
         generation: 3,
         replicas: 1,
+        health_check: None,
     });
     assert_roundtrips(ControlStop {
         instance_id: Uuid::new_v4(),

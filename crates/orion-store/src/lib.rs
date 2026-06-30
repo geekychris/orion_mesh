@@ -9,7 +9,10 @@ use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 use std::str::FromStr;
 use thiserror::Error;
 
+pub mod logs;
 pub mod node_cache;
+
+pub use logs::LogArchiveEntry;
 
 #[derive(Debug, Error)]
 pub enum StoreError {

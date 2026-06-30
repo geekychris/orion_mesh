@@ -11,11 +11,14 @@ use clap::Parser;
 use futures::StreamExt;
 use orion_auth::AuthMode;
 use orion_bus::{
-    ControlRun, ControlStop, Envelope, Heartbeat, LogLine, LogStream, NodeInventory, Topic,
-    WorkloadKind,
+    ControlRun, ControlStop, Envelope, Heartbeat, HealthStatus, LogLine, LogStream, NodeInventory,
+    ServiceHealth, TaskEvent, TaskOutcome, Topic, WorkloadKind,
 };
-use orion_runtime::{LaunchSpec, LogSink, NativeAdapter, OutStream, RuntimeRegistry};
-use orion_types::{Arch, NodeId, OperatingSystem, ResourceName};
+use orion_runtime::{
+    DockerAdapter, ExitNotice, ExitSink, LaunchSpec, LogSink, NativeAdapter, OutStream,
+    RuntimeAdapter, RuntimeRegistry,
+};
+use orion_types::{Arch, HealthCheck, NodeId, OperatingSystem, ResourceName};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -95,6 +98,13 @@ async fn main() -> Result<()> {
 
     let mut reg = RuntimeRegistry::new();
     reg.register(Arc::new(NativeAdapter::new()));
+    let docker = Arc::new(DockerAdapter::new());
+    if docker.available().await {
+        reg.register(docker);
+        info!("docker adapter advertised");
+    } else {
+        info!("docker adapter not advertised (daemon unreachable)");
+    }
     let registry = Arc::new(reg);
     let instances = Arc::new(InstanceRegistry::default());
 
@@ -104,6 +114,57 @@ async fn main() -> Result<()> {
         .await
         .context("connecting to NATS")?;
     info!("connected to NATS");
+
+    // Exit forwarder: process exits come in via `exit_rx` and get published as
+    // Envelope<TaskEvent> on orion.task.events. The controller's reconciler
+    // subscribes there and applies restart_policy.
+    let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<ExitNotice>();
+    {
+        let nats = nats.clone();
+        let node_id = node_id.clone();
+        let instances = instances.clone();
+        tokio::spawn(async move {
+            let subject = Topic::TaskEvents.as_str().to_owned();
+            while let Some(notice) = exit_rx.recv().await {
+                let meta = match instances.get(&notice.instance_id) {
+                    Some(m) => m,
+                    None => continue,
+                };
+                let outcome = match notice.exit_code {
+                    Some(0) => TaskOutcome::Succeeded { exit_code: 0 },
+                    Some(c) => TaskOutcome::Failed {
+                        exit_code: c,
+                        message: notice.message.clone(),
+                    },
+                    None => TaskOutcome::Failed {
+                        exit_code: -1,
+                        message: notice.message.clone(),
+                    },
+                };
+                let payload = TaskEvent {
+                    task_id: notice.instance_id,
+                    node_id: node_id.clone(),
+                    outcome,
+                };
+                instances.forget(&notice.instance_id);
+                info!(
+                    instance_id = %notice.instance_id,
+                    name = %meta.name,
+                    exit_code = ?notice.exit_code,
+                    "instance exited",
+                );
+                let env = Envelope::new(Some(node_id.clone()), payload);
+                match serde_json::to_vec(&env) {
+                    Ok(bytes) => {
+                        if let Err(e) = nats.publish(subject.clone(), bytes.into()).await {
+                            warn!(error = ?e, "exit publish failed");
+                        }
+                    }
+                    Err(e) => warn!(error = ?e, "exit encode failed"),
+                }
+            }
+        });
+    }
 
     // Log forwarder: per-process stdout/stderr lines come in via `log_rx` and
     // get published as Envelope<LogLine> on orion.logs.{node_id}.
@@ -150,13 +211,24 @@ async fn main() -> Result<()> {
         let registry = registry.clone();
         let instances = instances.clone();
         let log_tx = log_tx.clone();
+        let exit_tx = exit_tx.clone();
         let subject_for_log = subject.clone();
+        let nats_clone = nats.clone();
+        let node_id_clone = node_id.clone();
         tokio::spawn(async move {
             info!(subject = %subject_for_log, "subscribed to control subject");
             while let Some(msg) = sub.next().await {
-                if let Err(e) =
-                    dispatch_control(&subject_for_log, &msg.payload, &registry, &instances, &log_tx)
-                        .await
+                if let Err(e) = dispatch_control(
+                    &subject_for_log,
+                    &msg.payload,
+                    &registry,
+                    &instances,
+                    &log_tx,
+                    &exit_tx,
+                    &nats_clone,
+                    &node_id_clone,
+                )
+                .await
                 {
                     warn!(subject = %subject_for_log, error = ?e, "control dispatch failed");
                 }
@@ -283,6 +355,9 @@ async fn dispatch_control(
     registry: &RuntimeRegistry,
     instances: &Arc<InstanceRegistry>,
     log_tx: &LogSink,
+    exit_tx: &ExitSink,
+    nats: &async_nats::Client,
+    node_id: &NodeId,
 ) -> anyhow::Result<()> {
     if subject.ends_with(".run") {
         let env: Envelope<ControlRun> = serde_json::from_slice(payload)?;
@@ -327,8 +402,18 @@ async fn dispatch_control(
                     name: spec.name.clone(),
                     runtime,
                     log_sink: Some(log_tx.clone()),
+                    exit_sink: Some(exit_tx.clone()),
                 })
                 .await?;
+            // If the Service declared a health probe, spawn a per-instance
+            // probe loop. It runs until the instance is forgotten (after exit).
+            if let Some(hc) = spec.health_check.clone() {
+                let nats = nats.clone();
+                let node_id = node_id.clone();
+                let name = spec.name.clone();
+                let instances = instances.clone();
+                tokio::spawn(probe_loop(nats, node_id, name, id, hc, instances));
+            }
         }
     } else if subject.ends_with(".stop") {
         let env: Envelope<ControlStop> = serde_json::from_slice(payload)?;
@@ -347,6 +432,105 @@ async fn dispatch_control(
 /// Adds ORION_REPLICA_INDEX + ORION_REPLICA_COUNT to the workload's env
 /// (for runtimes that have an env map). Not all runtimes do — silently no-ops
 /// for `peer`, `homeassistant`, etc.
+/// Periodic health probe loop for a service instance. Probes on the
+/// configured interval; publishes ServiceHealth to `orion.service.health`.
+/// Exits when the instance is forgotten (i.e. after process exit).
+async fn probe_loop(
+    nats: async_nats::Client,
+    node_id: NodeId,
+    service: ResourceName,
+    instance_id: Uuid,
+    hc: HealthCheck,
+    instances: Arc<InstanceRegistry>,
+) {
+    let (interval, threshold) = match &hc {
+        HealthCheck::Http { interval_seconds, failure_threshold, .. }
+        | HealthCheck::Tcp { interval_seconds, failure_threshold, .. }
+        | HealthCheck::Exec { interval_seconds, failure_threshold, .. } => {
+            (*interval_seconds as u64, *failure_threshold)
+        }
+    };
+    let subject = Topic::ServiceHealth.as_str().to_owned();
+    let mut ticker = tokio::time::interval(Duration::from_secs(interval.max(1)));
+    let mut consecutive_failures: u32 = 0;
+    // Give the workload a beat to start listening before the first probe.
+    tokio::time::sleep(Duration::from_secs(interval.min(2))).await;
+    loop {
+        ticker.tick().await;
+        if instances.get(&instance_id).is_none() {
+            // Instance has exited and been forgotten — stop probing.
+            return;
+        }
+        let (status, message) = match run_probe(&hc).await {
+            Ok(()) => {
+                consecutive_failures = 0;
+                (HealthStatus::Healthy, None)
+            }
+            Err(e) => {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                let msg = format!("{e}");
+                if consecutive_failures >= threshold {
+                    (HealthStatus::Unhealthy, Some(msg))
+                } else {
+                    (HealthStatus::Unknown, Some(msg))
+                }
+            }
+        };
+        let payload = ServiceHealth {
+            node_id: node_id.clone(),
+            service: service.clone(),
+            instance_id: instance_id.to_string(),
+            status,
+            message,
+            consecutive_failures,
+        };
+        let env = Envelope::new(Some(node_id.clone()), payload);
+        if let Ok(bytes) = serde_json::to_vec(&env) {
+            let _ = nats.publish(subject.clone(), bytes.into()).await;
+        }
+    }
+}
+
+async fn run_probe(hc: &HealthCheck) -> Result<()> {
+    match hc {
+        HealthCheck::Http { path, port, .. } => {
+            let url = format!("http://127.0.0.1:{port}{path}");
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(3))
+                .build()?;
+            let resp = client.get(&url).send().await?;
+            if !resp.status().is_success() {
+                anyhow::bail!("http {url} → {}", resp.status());
+            }
+            Ok(())
+        }
+        HealthCheck::Tcp { port, .. } => {
+            let _stream = tokio::time::timeout(
+                Duration::from_secs(3),
+                tokio::net::TcpStream::connect(("127.0.0.1", *port)),
+            )
+            .await??;
+            Ok(())
+        }
+        HealthCheck::Exec { command, .. } => {
+            if command.is_empty() {
+                anyhow::bail!("exec health check has empty command");
+            }
+            let mut cmd = tokio::process::Command::new(&command[0]);
+            cmd.args(&command[1..]);
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let status =
+                tokio::time::timeout(Duration::from_secs(5), cmd.status()).await??;
+            if !status.success() {
+                anyhow::bail!("exec exit {status:?}");
+            }
+            Ok(())
+        }
+    }
+}
+
 fn inject_replica_env(rt: &mut orion_types::Runtime, idx: u32, count: u32) {
     use orion_types::Runtime;
     let envs = match rt {

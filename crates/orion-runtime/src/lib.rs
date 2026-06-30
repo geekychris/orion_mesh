@@ -6,11 +6,20 @@
 //! to translate `Secret.vault_ref` URIs to plaintext bytes at consumption time.
 
 pub mod adapter;
+pub mod docker;
 pub mod native;
 pub mod secrets;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
-pub use adapter::{LaunchSpec, LaunchedInstance, LogSink, OutStream, RuntimeAdapter, RuntimeError};
+pub use adapter::{
+    ExitNotice, ExitSink, LaunchSpec, LaunchedInstance, LogSink, OutStream, RuntimeAdapter,
+    RuntimeError,
+};
+pub use docker::DockerAdapter;
 pub use native::NativeAdapter;
+#[cfg(feature = "wasm")]
+pub use wasm::WasmAdapter;
 pub use secrets::{PlaintextResolver, SecretError, SecretResolver};
 
 use std::sync::Arc;

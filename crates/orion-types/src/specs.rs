@@ -380,6 +380,36 @@ pub struct QueueSpec {
 }
 
 // ============================================================================
+// Workflow — DAG of Task references with depends_on edges
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct WorkflowSpec {
+    /// Steps in the workflow. Each one names a Task resource that already
+    /// exists; the workflow runner dispatches them in dependency order.
+    pub steps: Vec<WorkflowStep>,
+    /// When a step fails, should downstream steps run anyway? Default: false
+    /// (fail-fast). Set to true for "best effort" workflows where each step
+    /// is independent and you want max coverage.
+    pub continue_on_error: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WorkflowStep {
+    /// Step name — unique within the workflow.
+    pub name: String,
+    /// The Task resource to dispatch.
+    pub task: ResourceName,
+    /// Step names that must finish (successfully, unless continue_on_error)
+    /// before this one starts. Empty = root step.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+}
+
+// ============================================================================
 // Network
 // ============================================================================
 
