@@ -1,0 +1,30 @@
+[package]
+name = "orion-sidecar"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Sidecar Service for OrionMesh — tails another Service's log archive and republishes lines"
+
+[[bin]]
+name = "orion-sidecar"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+orion-bus.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+async-nats.workspace = true
+reqwest.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
+regex = "1"

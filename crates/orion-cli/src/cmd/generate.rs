@@ -22,6 +22,9 @@ pub enum Sub {
     Schedule(ScheduleArgs),
     /// Generate a Service that processes messages from a named Queue.
     Processor(ProcessorArgs),
+    /// Generate a sidecar Service that tails another Service's log archive
+    /// and republishes lines (optionally regex-filtered) to a named queue.
+    Sidecar(SidecarArgs),
 }
 
 pub async fn run(ctx: &Ctx, sub: Sub) -> Result<()> {
@@ -50,6 +53,11 @@ pub async fn run(ctx: &Ctx, sub: Sub) -> Result<()> {
             let apply = a.apply;
             let name = a.name.clone();
             (build_processor(ctx, a).await?, apply, "Service", name)
+        }
+        Sub::Sidecar(a) => {
+            let apply = a.apply;
+            let name = a.name.clone();
+            (build_sidecar(a)?, apply, "Service", name)
         }
     };
     if apply {
@@ -554,3 +562,68 @@ fn emit(
 // pacify the unused-import lint when this module compiles standalone.
 #[allow(dead_code)]
 fn _unused_pacify_serialize<T: Serialize>(_t: &T) {}
+
+// --------------------------------------------------------------------------- sidecar
+
+#[derive(ClapArgs, Debug)]
+pub struct SidecarArgs {
+    /// Name for the generated sidecar Service.
+    pub name: String,
+    /// The Service to attach to — its log archive is the source.
+    #[arg(long)]
+    pub source: String,
+    /// The queue to publish lines to (must already exist).
+    #[arg(long)]
+    pub queue: String,
+    /// Only republish lines matching this regex.
+    #[arg(long)]
+    pub filter: Option<String>,
+    /// How often to poll the source's log archive (seconds).
+    #[arg(long, default_value_t = 5)]
+    pub interval_seconds: u32,
+    #[arg(long)]
+    pub apply: bool,
+    #[arg(long)]
+    pub controller_url: Option<String>,
+}
+
+fn build_sidecar(a: SidecarArgs) -> Result<String> {
+    let controller = a
+        .controller_url
+        .clone()
+        .unwrap_or_else(|| "http://127.0.0.1:7878".into());
+    let queue_subject = orion_types::default_queue_subject(&a.queue);
+    let queue_stream = orion_types::default_queue_stream(&a.queue);
+    let interval_str = a.interval_seconds.to_string();
+    let mut env_map = serde_yml::Mapping::new();
+    env_map.insert(Y::from("NATS_URL"), Y::from("nats://127.0.0.1:4222"));
+    env_map.insert(Y::from("ORION_CONTROLLER_URL"), Y::from(controller));
+    env_map.insert(Y::from("SIDECAR_SOURCE_SERVICE"), Y::from(a.source.clone()));
+    env_map.insert(Y::from("ORION_QUEUE_NAME"), Y::from(a.queue.clone()));
+    env_map.insert(Y::from("ORION_QUEUE_SUBJECT"), Y::from(queue_subject));
+    env_map.insert(Y::from("ORION_QUEUE_STREAM"), Y::from(queue_stream));
+    env_map.insert(Y::from("SIDECAR_INTERVAL_SECONDS"), Y::from(interval_str.as_str()));
+    if let Some(f) = &a.filter {
+        env_map.insert(Y::from("SIDECAR_FILTER_REGEX"), Y::from(f.as_str()));
+    }
+    let mut runtime = serde_yml::Mapping::new();
+    runtime.insert(Y::from("kind"), Y::from("native"));
+    runtime.insert(Y::from("exec"), Y::from("target/debug/orion-sidecar"));
+    runtime.insert(Y::from("args"), Y::from(Vec::<Y>::new()));
+    runtime.insert(Y::from("env"), Y::from(env_map));
+
+    let mut spec = serde_yml::Mapping::new();
+    spec.insert(Y::from("runtime"), Y::from(runtime));
+    spec.insert(Y::from("restart_policy"), Y::from("on_failure"));
+
+    emit(
+        "Service",
+        &a.name,
+        Some(serde_yml::Mapping::from_iter([
+            (Y::from("role"), Y::from("sidecar")),
+            (Y::from("source"), Y::from(a.source)),
+            (Y::from("queue"), Y::from(a.queue)),
+        ])),
+        Y::from(spec),
+    )
+}

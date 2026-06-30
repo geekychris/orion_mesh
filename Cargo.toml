@@ -16,6 +16,7 @@ members = [
     "crates/orion-demo-bins",
     "crates/orion-file-watcher",
     "crates/orion-webhook",
+    "crates/orion-sidecar",
 ]
 
 [workspace.package]

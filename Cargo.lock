@@ -2250,6 +2250,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "orion-sidecar"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "chrono",
+ "clap",
+ "orion-bus",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "orion-store"
 version = "0.1.0"
 dependencies = [
