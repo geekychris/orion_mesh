@@ -1,0 +1,27 @@
+[package]
+name = "orion-opensearch-sink"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Ship OrionMesh log archive entries to OpenSearch / Elasticsearch via the bulk API"
+
+[[bin]]
+name = "orion-opensearch-sink"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+reqwest.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true

@@ -17,6 +17,10 @@ members = [
     "crates/orion-file-watcher",
     "crates/orion-webhook",
     "crates/orion-sidecar",
+    "crates/orion-kafka-bridge",
+    "crates/orion-opensearch-sink",
+    "crates/orion-prom-scrape",
+    "crates/orion-sqlite-tap",
 ]
 
 [workspace.package]

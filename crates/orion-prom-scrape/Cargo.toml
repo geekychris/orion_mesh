@@ -1,0 +1,30 @@
+[package]
+name = "orion-prom-scrape"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Prometheus integration — agent-side scraper + Alertmanager receiver for OrionMesh"
+
+[[bin]]
+name = "orion-prom-scrape"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+orion-bus.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync", "signal"] }
+async-nats.workspace = true
+axum.workspace = true
+reqwest.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true

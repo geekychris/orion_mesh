@@ -1,0 +1,29 @@
+[package]
+name = "orion-sqlite-tap"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "SQLite CDC tap — watch a table's rowid and publish new rows to an OrionMesh queue"
+
+[[bin]]
+name = "orion-sqlite-tap"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+orion-bus.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+async-nats.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
+sqlx = { workspace = true }
