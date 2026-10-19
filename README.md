@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Orion Mesh logo" width="180">
+</p>
+
 # OrionMesh
 
 **A "Kubernetes-lite" orchestrator for a heterogeneous personal cluster.** Schedule workloads across your Macs, Linux boxes, and Raspberry Pis with capability-aware placement, native execution (no mandatory Docker), durable queues, and a workflow engine — all from a single Rust binary stack.
