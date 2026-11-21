@@ -286,7 +286,7 @@
   <h1>OrionMesh</h1>
   <span id="status" class="pill">connecting…</span>
   <div class="subtitle">
-    Controller <code>__CONTROLLER_URL__</code>
+    Controller <code class="ctrl-url">__CONTROLLER_URL__</code>
     <span class="dim">·</span>
     refresh: <span id="refresh-clock">–</span>
     <span class="dim">·</span>
@@ -304,12 +304,20 @@
 </main>
 
 <footer>
-  OrionMesh Phase 1 substrate · UI talks to <code>__CONTROLLER_URL__</code> ·
+  OrionMesh Phase 1 substrate · UI talks to <code class="ctrl-url">__CONTROLLER_URL__</code> ·
   source: <a href="https://github.com/geekychris/orion_mesh">github.com/geekychris/orion_mesh</a>
 </footer>
 
 <script>
-  const CTRL = "__CONTROLLER_URL__";
+  // ORION_CONTROLLER_URL as configured. A value that starts with ":" is a
+  // port on the host this page was loaded from, so the page works from
+  // wherever the browser reached it (a LAN name, an IP over a VPN) without
+  // knowing that name in advance.
+  const CTRL_RAW = "__CONTROLLER_URL__";
+  const CTRL = CTRL_RAW.startsWith(":")
+    ? `${location.protocol}//${location.hostname}${CTRL_RAW}`
+    : CTRL_RAW;
+  document.querySelectorAll("code.ctrl-url").forEach((el) => { el.textContent = CTRL; });
   // Kinds whose pages we want to be able to OPEN even when empty (so the operator
   // can apply the first one). Other kinds show up automatically when populated.
   const ALWAYS_VISIBLE = new Set(["Nodes", "Apply"]);
