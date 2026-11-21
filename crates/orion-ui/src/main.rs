@@ -3,7 +3,9 @@
 //! Single-page vanilla JS app served by axum. The HTML lives in `index.html`
 //! and gets `__CONTROLLER_URL__` substituted at request time so the page knows
 //! where to fetch from. CORS is enabled on the controller side; this server
-//! just serves static HTML.
+//! just serves static HTML. The controller's /v1 API needs the cluster token
+//! as a bearer token: the page asks for it and keeps it in the browser tab
+//! (sessionStorage), so this server never holds or forwards it.
 
 use anyhow::Result;
 use axum::{Router, response::Html, routing::get};

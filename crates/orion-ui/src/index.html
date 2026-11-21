@@ -289,6 +289,10 @@
     Controller <code>__CONTROLLER_URL__</code>
     <span class="dim">·</span>
     refresh: <span id="refresh-clock">–</span>
+    <span class="dim">·</span>
+    <label title="The controller's API needs the cluster token (~/.config/orion/cluster.token on the controller host). It is kept in this tab only (sessionStorage) and sent as a bearer token to the controller, never to this UI server.">
+      token <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="cluster token" size="18">
+    </label>
   </div>
 </header>
 
@@ -413,8 +417,20 @@
   };
 
   // ------------------------------------------------------------- API calls
+  // The controller requires `Authorization: Bearer <cluster token>` on /v1/*.
+  // The token stays in this tab (sessionStorage); this server never sees it.
+  let TOKEN = "";
+  try { TOKEN = sessionStorage.getItem("orion.token") || ""; } catch (_) {}
+  function esc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
   async function api(path, opts = {}) {
-    const r = await fetch(`${CTRL}${path}`, opts);
+    const headers = Object.assign({}, opts.headers || {});
+    if (TOKEN) headers["authorization"] = `Bearer ${TOKEN}`;
+    const r = await fetch(`${CTRL}${path}`, Object.assign({}, opts, { headers }));
+    if (r.status === 401) {
+      throw new Error(TOKEN ? "401: the controller rejected the cluster token" : "401: enter the cluster token (top right) to use the controller's API");
+    }
     if (!r.ok) {
       const txt = await r.text().catch(() => r.statusText);
       throw new Error(`${r.status} ${r.statusText}: ${txt}`);
@@ -1230,7 +1246,7 @@ spec:
         cTbl.append(cTb);
         body.append(cTbl);
       } catch (e) {
-        body.innerHTML = `<div class="logs-empty">error: ${e}</div>`;
+        body.innerHTML = `<div class="logs-empty">error: ${esc(e)}</div>`;
       }
     };
     refresh();
@@ -1287,7 +1303,7 @@ spec:
         tbl.append(tb);
         body.append(tbl);
       } catch (e) {
-        body.innerHTML = `<div class="logs-empty">error: ${e}</div>`;
+        body.innerHTML = `<div class="logs-empty">error: ${esc(e)}</div>`;
       }
     };
     refresh();
@@ -1318,7 +1334,7 @@ spec:
       try {
         const hits = await api("/v1/logs/search?" + params);
         if (!hits.length) {
-          out.innerHTML = `<div class="logs-empty">no matches for '${q.value}'</div>`;
+          out.innerHTML = `<div class="logs-empty">no matches for '${esc(q.value)}'</div>`;
           return;
         }
         out.innerHTML = "";
@@ -1333,7 +1349,7 @@ spec:
           out.append(row);
         }
       } catch (e) {
-        out.innerHTML = `<div class="logs-empty">error: ${e}</div>`;
+        out.innerHTML = `<div class="logs-empty">error: ${esc(e)}</div>`;
       }
     };
     btn.onclick = search;
@@ -1871,6 +1887,15 @@ spec:
 
   // ------------------------------------------------------------- boot
   refresh();
+  {
+    const tokenInput = $("#token");
+    tokenInput.value = TOKEN;
+    tokenInput.addEventListener("change", () => {
+      TOKEN = tokenInput.value.trim();
+      try { TOKEN ? sessionStorage.setItem("orion.token", TOKEN) : sessionStorage.removeItem("orion.token"); } catch (_) {}
+      refresh();
+    });
+  }
   setInterval(refresh, 3000);
 </script>
 </body>
