@@ -37,15 +37,18 @@ pub fn parse_scrape(body: &str) -> Vec<(String, serde_json::Value, f64)> {
 }
 
 fn parse_metric_head(head: &str) -> (String, serde_json::Value) {
-    if let Some(start) = head.find('{') {
-        if let Some(end) = head.rfind('}') {
-            let name = head[..start].trim().to_owned();
-            let labels_str = &head[start + 1..end];
-            let labels = parse_labels(labels_str);
-            return (name, labels);
-        }
+    if let Some(start) = head.find('{')
+        && let Some(end) = head.rfind('}')
+    {
+        let name = head[..start].trim().to_owned();
+        let labels_str = &head[start + 1..end];
+        let labels = parse_labels(labels_str);
+        return (name, labels);
     }
-    (head.trim().to_owned(), serde_json::Value::Object(Default::default()))
+    (
+        head.trim().to_owned(),
+        serde_json::Value::Object(Default::default()),
+    )
 }
 
 fn parse_labels(s: &str) -> serde_json::Value {

@@ -27,12 +27,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<()> {
     println!();
 
     // ---- controller --------------------------------------------------------
-    match tokio::time::timeout(
-        Duration::from_secs(2),
-        http::get_text(ctx, "/health"),
-    )
-    .await
-    {
+    match tokio::time::timeout(Duration::from_secs(2), http::get_text(ctx, "/health")).await {
         Ok(Ok(_)) => report.ok("controller", "/health → ok", &ctx.controller),
         Ok(Err(e)) => report.fail("controller", &format!("/health → {e}"), &ctx.controller),
         Err(_) => report.fail("controller", "/health → timeout (2s)", &ctx.controller),
@@ -100,7 +95,11 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<()> {
                     ),
                 }
             }
-            Err(e) => report.fail("broker", &format!("NATS connect failed: {e}"), &ctx.nats_url),
+            Err(e) => report.fail(
+                "broker",
+                &format!("NATS connect failed: {e}"),
+                &ctx.nats_url,
+            ),
         }
     }
 

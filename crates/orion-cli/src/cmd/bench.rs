@@ -12,7 +12,7 @@ use async_nats::jetstream::{self, consumer};
 use clap::{Args as ClapArgs, Subcommand};
 use futures::StreamExt;
 use orion_types::{Resource, ResourceBody};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 #[derive(Subcommand, Debug)]

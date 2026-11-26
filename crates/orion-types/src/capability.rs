@@ -79,10 +79,10 @@ impl<'de> Deserialize<'de> for AttrMatch {
         Ok(match v {
             serde_json::Value::Array(items) => AttrMatch::OneOf(items),
             serde_json::Value::Object(ref map)
-                if map.keys().all(|k| matches!(
-                    k.as_str(),
-                    "eq" | "ne" | "gt" | "gte" | "lt" | "lte"
-                )) && !map.is_empty() =>
+                if map
+                    .keys()
+                    .all(|k| matches!(k.as_str(), "eq" | "ne" | "gt" | "gte" | "lt" | "lte"))
+                    && !map.is_empty() =>
             {
                 let op: AttrOp = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
                 AttrMatch::Op(op)

@@ -33,10 +33,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<()> {
     http::post_yaml(ctx, "/v1/resources/apply", body).await?;
     println!("applied {kind}/{name}");
     let resp = http::post_empty(ctx, &format!("/v1/dispatch/{kind}/{name}")).await?;
-    let node = resp
-        .get("node")
-        .and_then(|s| s.as_str())
-        .unwrap_or("?");
+    let node = resp.get("node").and_then(|s| s.as_str()).unwrap_or("?");
     println!("dispatched {kind}/{name} to {node}");
     if args.watch {
         let logs_args = crate::cmd::logs::Args {

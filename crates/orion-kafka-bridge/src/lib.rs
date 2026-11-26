@@ -2,9 +2,9 @@
 //!
 //! The binary in `src/main.rs` runs in one of two modes:
 //!   * `orion->kafka` — subscribe to an OrionMesh queue, produce each
-//!                       message to a Kafka topic.
+//!     message to a Kafka topic.
 //!   * `kafka->orion` — consume a Kafka topic, publish each record to
-//!                       an OrionMesh queue.
+//!     an OrionMesh queue.
 //!
 //! Helpers here cover envelope encoding, the small JSON shape we add
 //! when bridging, and direction parsing.
@@ -22,7 +22,9 @@ impl Direction {
         match s {
             "orion->kafka" | "out" | "orion_to_kafka" => Ok(Direction::OrionToKafka),
             "kafka->orion" | "in" | "kafka_to_orion" => Ok(Direction::KafkaToOrion),
-            other => anyhow::bail!("unknown direction: {other:?} (expected orion->kafka or kafka->orion)"),
+            other => anyhow::bail!(
+                "unknown direction: {other:?} (expected orion->kafka or kafka->orion)"
+            ),
         }
     }
 }
@@ -37,11 +39,14 @@ pub struct OutboundEnvelope {
     pub body: serde_json::Value,
 }
 
-pub fn make_outbound(orion_subject: &str, body_bytes: &[u8], at: chrono::DateTime<chrono::Utc>) -> OutboundEnvelope {
-    let body: serde_json::Value =
-        serde_json::from_slice(body_bytes).unwrap_or_else(|_| {
-            serde_json::Value::String(String::from_utf8_lossy(body_bytes).into_owned())
-        });
+pub fn make_outbound(
+    orion_subject: &str,
+    body_bytes: &[u8],
+    at: chrono::DateTime<chrono::Utc>,
+) -> OutboundEnvelope {
+    let body: serde_json::Value = serde_json::from_slice(body_bytes).unwrap_or_else(|_| {
+        serde_json::Value::String(String::from_utf8_lossy(body_bytes).into_owned())
+    });
     OutboundEnvelope {
         orion_subject: orion_subject.to_owned(),
         at: at.to_rfc3339(),
@@ -68,10 +73,9 @@ pub fn make_inbound(
     subject: &str,
     at: chrono::DateTime<chrono::Utc>,
 ) -> InboundEvent {
-    let body: serde_json::Value =
-        serde_json::from_slice(body_bytes).unwrap_or_else(|_| {
-            serde_json::Value::String(String::from_utf8_lossy(body_bytes).into_owned())
-        });
+    let body: serde_json::Value = serde_json::from_slice(body_bytes).unwrap_or_else(|_| {
+        serde_json::Value::String(String::from_utf8_lossy(body_bytes).into_owned())
+    });
     InboundEvent {
         kafka_topic: topic.to_owned(),
         kafka_partition: partition,
@@ -90,12 +94,24 @@ mod tests {
 
     #[test]
     fn parse_direction_handles_canonical_and_aliases() {
-        assert_eq!(Direction::parse("orion->kafka").unwrap(), Direction::OrionToKafka);
+        assert_eq!(
+            Direction::parse("orion->kafka").unwrap(),
+            Direction::OrionToKafka
+        );
         assert_eq!(Direction::parse("out").unwrap(), Direction::OrionToKafka);
-        assert_eq!(Direction::parse("orion_to_kafka").unwrap(), Direction::OrionToKafka);
-        assert_eq!(Direction::parse("kafka->orion").unwrap(), Direction::KafkaToOrion);
+        assert_eq!(
+            Direction::parse("orion_to_kafka").unwrap(),
+            Direction::OrionToKafka
+        );
+        assert_eq!(
+            Direction::parse("kafka->orion").unwrap(),
+            Direction::KafkaToOrion
+        );
         assert_eq!(Direction::parse("in").unwrap(), Direction::KafkaToOrion);
-        assert_eq!(Direction::parse("kafka_to_orion").unwrap(), Direction::KafkaToOrion);
+        assert_eq!(
+            Direction::parse("kafka_to_orion").unwrap(),
+            Direction::KafkaToOrion
+        );
     }
 
     #[test]

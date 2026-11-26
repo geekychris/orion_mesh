@@ -67,7 +67,8 @@ fn build_inline(reqs: &[String]) -> Result<String> {
             .split_once('.')
             .ok_or_else(|| anyhow::anyhow!("expected CAP.ATTR (with dot) in {lhs:?}"))?;
         // Try JSON first, fall back to bare string.
-        let val: Value = serde_json::from_str(raw_val).unwrap_or_else(|_| Value::String(raw_val.to_owned()));
+        let val: Value =
+            serde_json::from_str(raw_val).unwrap_or_else(|_| Value::String(raw_val.to_owned()));
         let cap_entry = out
             .entry(cap.to_owned())
             .or_insert_with(|| Value::Object(Map::new()));

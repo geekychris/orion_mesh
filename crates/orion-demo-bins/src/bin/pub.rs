@@ -41,10 +41,18 @@ async fn main() -> Result<()> {
     let label = args
         .label
         .clone()
-        .or_else(|| std::env::var("ORION_REPLICA_INDEX").ok().map(|i| format!("r{i}")))
+        .or_else(|| {
+            std::env::var("ORION_REPLICA_INDEX")
+                .ok()
+                .map(|i| format!("r{i}"))
+        })
         .unwrap_or_else(|| "demo".into());
 
-    let mode = if args.jetstream { "JetStream" } else { "core NATS" };
+    let mode = if args.jetstream {
+        "JetStream"
+    } else {
+        "core NATS"
+    };
     println!(
         "[demo-pub:{label}] connecting to {} -> {} ({mode})",
         args.nats_url, args.subject
@@ -97,12 +105,10 @@ async fn main() -> Result<()> {
                 .publish(publish_subj.clone(), line.clone().into())
                 .await?
                 .await?;
-            println!(
-                "[demo-pub:{label}] sent (js seq={}): {line}",
-                ack.sequence
-            );
+            println!("[demo-pub:{label}] sent (js seq={}): {line}", ack.sequence);
         } else {
-            nc.publish(publish_subj.clone(), line.clone().into()).await?;
+            nc.publish(publish_subj.clone(), line.clone().into())
+                .await?;
             println!("[demo-pub:{label}] sent: {line}");
         }
         tokio::time::sleep(interval).await;

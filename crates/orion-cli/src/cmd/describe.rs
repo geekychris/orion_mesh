@@ -13,8 +13,7 @@ pub struct Args {
 
 pub async fn run(ctx: &Ctx, args: Args) -> Result<()> {
     let kind = super::util::canonical_kind(&args.kind);
-    let v: Value =
-        http::get_json(ctx, &format!("/v1/resources/{kind}/{}", args.name)).await?;
+    let v: Value = http::get_json(ctx, &format!("/v1/resources/{kind}/{}", args.name)).await?;
     match ctx.output {
         output::Format::Json => output::print_json(&v)?,
         _ => output::print_yaml(&v)?,

@@ -82,7 +82,9 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<()> {
                 eprintln!("[up] nats-server found on PATH → using native broker");
                 ResolvedNats::Native
             } else {
-                eprintln!("[up] nats-server not on PATH → falling back to Docker (install nats-server to avoid Docker — `brew install nats-server` or https://nats.io)");
+                eprintln!(
+                    "[up] nats-server not on PATH → falling back to Docker (install nats-server to avoid Docker — `brew install nats-server` or https://nats.io)"
+                );
                 ResolvedNats::Docker
             }
         }
@@ -95,8 +97,8 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<()> {
 
     match resolved {
         ResolvedNats::Native => {
-            let child = start_native_nats(&mut children).await?;
-            let _ = child; // pushed into `children`
+            // start_native_nats pushes the process into `children`.
+            start_native_nats(&mut children).await?;
         }
         ResolvedNats::Docker => ensure_docker_nats(&args.nats_container).await?,
         ResolvedNats::None => eprintln!("[up] skipping NATS (--nats none)"),
@@ -110,13 +112,22 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<()> {
     }
     ctrl.env(
         "ORION_STORE_PATH",
-        args.store.clone().unwrap_or_else(|| "sqlite::memory:".into()),
+        args.store
+            .clone()
+            .unwrap_or_else(|| "sqlite::memory:".into()),
     );
     ctrl.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut ctrl_child = ctrl.spawn().context("spawning orion-controller")?;
-    pipe("controller", ctrl_child.stdout.take(), ctrl_child.stderr.take());
+    pipe(
+        "controller",
+        ctrl_child.stdout.take(),
+        ctrl_child.stderr.take(),
+    );
     children.push(("controller", ctrl_child));
-    eprintln!("[up] controller starting on http://{}", args.controller_bind);
+    eprintln!(
+        "[up] controller starting on http://{}",
+        args.controller_bind
+    );
 
     // Probe /health for a couple of seconds.
     let controller_url = format!("http://{}/health", args.controller_bind);
@@ -204,10 +215,15 @@ async fn ensure_docker_nats(container: &str) -> Result<()> {
     eprintln!("[up] starting NATS via docker (docker run nats:2.10 -js)");
     let status = Command::new("docker")
         .args([
-            "run", "-d", "--rm",
-            "--name", container,
-            "-p", "4222:4222",
-            "nats:2.10", "-js",
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container,
+            "-p",
+            "4222:4222",
+            "nats:2.10",
+            "-js",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -231,8 +247,10 @@ async fn start_native_nats(children: &mut Vec<(&'static str, Child)>) -> Result<
     eprintln!("[up] starting NATS via native nats-server ({bin})");
     let mut cmd = Command::new(bin);
     cmd.arg("-js")
-        .arg("--addr").arg("127.0.0.1")
-        .arg("-p").arg("4222")
+        .arg("--addr")
+        .arg("127.0.0.1")
+        .arg("-p")
+        .arg("4222")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().context("spawning nats-server")?;
@@ -243,7 +261,10 @@ async fn start_native_nats(children: &mut Vec<(&'static str, Child)>) -> Result<
 
 async fn wait_for_nats_ready() -> Result<()> {
     for i in 0..40 {
-        if tokio::net::TcpStream::connect("127.0.0.1:4222").await.is_ok() {
+        if tokio::net::TcpStream::connect("127.0.0.1:4222")
+            .await
+            .is_ok()
+        {
             eprintln!("[up] NATS ready after {}ms", (i + 1) * 100);
             return Ok(());
         }

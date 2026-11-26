@@ -48,7 +48,10 @@ async fn init_processor(ctx: &Ctx, a: ProcessorArgs) -> Result<()> {
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     println!("→ {}", dir.display());
 
-    let group = a.group.clone().unwrap_or_else(|| format!("{}-workers", a.queue));
+    let group = a
+        .group
+        .clone()
+        .unwrap_or_else(|| format!("{}-workers", a.queue));
 
     let template_path: PathBuf = match a.lang.as_str() {
         "python" => scaffold_python(&dir, &a, a.force)?,
@@ -119,8 +122,7 @@ echo "ok: {name} ready — apply {name}.yaml + dispatch"
 // We embed it at build time so the init scaffolder and the example tree
 // can never drift apart. The fixture is also covered by the integration
 // test against the live cluster.
-const PYTHON_TEMPLATE: &str =
-    include_str!("../../../../examples/10-queues/python/processor.py");
+const PYTHON_TEMPLATE: &str = include_str!("../../../../examples/10-queues/python/processor.py");
 
 // --------------------------------------------------------------------------- java
 
@@ -393,7 +395,10 @@ spec:
 
 fn write_file(path: &Path, body: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
-        println!("  - {} (exists, skipped — use --force to overwrite)", path.display());
+        println!(
+            "  - {} (exists, skipped — use --force to overwrite)",
+            path.display()
+        );
         return Ok(());
     }
     fs::write(path, body).with_context(|| format!("writing {}", path.display()))?;
@@ -410,4 +415,6 @@ fn set_exec(path: &Path) -> Result<()> {
     Ok(())
 }
 #[cfg(not(unix))]
-fn set_exec(_: &Path) -> Result<()> { Ok(()) }
+fn set_exec(_: &Path) -> Result<()> {
+    Ok(())
+}

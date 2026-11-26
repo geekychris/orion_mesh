@@ -168,7 +168,9 @@ async fn main() -> Result<()> {
         Cmd::Doctor(a) => cmd::doctor::run(&ctx, a).await,
         Cmd::Bench(s) => cmd::bench::run(&ctx, s).await,
         Cmd::Init(s) => cmd::init::run(&ctx, s).await,
-        Cmd::Completions(s) => cmd::shell::run_completions(cmd::shell::CompletionsArgs { shell: s }),
+        Cmd::Completions(s) => {
+            cmd::shell::run_completions(cmd::shell::CompletionsArgs { shell: s })
+        }
         Cmd::Env(a) => cmd::shell::run_env(&ctx, a),
         Cmd::Exec(a) => cmd::shell::run_exec(&ctx, a).await,
     }

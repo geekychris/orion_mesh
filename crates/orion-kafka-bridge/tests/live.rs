@@ -7,10 +7,10 @@
 //! `cargo test -p orion-kafka-bridge -- --ignored --nocapture`.
 
 use futures::StreamExt;
+use rdkafka::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
-use rdkafka::Message;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -101,7 +101,9 @@ async fn wait_for_kafka_ready(max_secs: u64) {
             .set("socket.timeout.ms", "1000")
             .create()
             .expect("base producer config");
-        let meta = producer.client().fetch_metadata(None, Duration::from_secs(2));
+        let meta = producer
+            .client()
+            .fetch_metadata(None, Duration::from_secs(2));
         if meta.is_ok() {
             return;
         }
@@ -119,7 +121,10 @@ async fn create_topic(topic: &str) {
         .expect("admin client");
     let nt = NewTopic::new(topic, 1, TopicReplication::Fixed(1));
     let _ = admin
-        .create_topics(&[nt], &AdminOptions::default().request_timeout(Some(Duration::from_secs(5))))
+        .create_topics(
+            &[nt],
+            &AdminOptions::default().request_timeout(Some(Duration::from_secs(5))),
+        )
         .await;
 }
 
@@ -224,9 +229,12 @@ async fn kafka_bridge_roundtrips_both_directions() {
         .await
         .unwrap();
     let body = serde_json::json!({ "marker": "ORION-TO-KAFKA", "n": 1 });
-    nc.publish(OUT_SUBJECT.to_owned(), serde_json::to_vec(&body).unwrap().into())
-        .await
-        .unwrap();
+    nc.publish(
+        OUT_SUBJECT.to_owned(),
+        serde_json::to_vec(&body).unwrap().into(),
+    )
+    .await
+    .unwrap();
     nc.flush().await.unwrap();
 
     // Consume from Kafka and look for our marker (allow a short retry window
@@ -243,15 +251,11 @@ async fn kafka_bridge_roundtrips_both_directions() {
     let mut found = false;
     let out_deadline = std::time::Instant::now() + Duration::from_secs(30);
     while std::time::Instant::now() < out_deadline {
-        let next =
-            tokio::time::timeout(Duration::from_secs(2), kafka_stream.next()).await;
+        let next = tokio::time::timeout(Duration::from_secs(2), kafka_stream.next()).await;
         if let Ok(Some(Ok(m))) = next {
             let payload = m.payload().unwrap_or_default();
-            let env: serde_json::Value =
-                serde_json::from_slice(payload).expect("envelope is json");
-            if env["orion_subject"] == OUT_SUBJECT
-                && env["body"]["marker"] == "ORION-TO-KAFKA"
-            {
+            let env: serde_json::Value = serde_json::from_slice(payload).expect("envelope is json");
+            if env["orion_subject"] == OUT_SUBJECT && env["body"]["marker"] == "ORION-TO-KAFKA" {
                 found = true;
                 break;
             }
@@ -327,8 +331,7 @@ async fn kafka_bridge_roundtrips_both_directions() {
     while std::time::Instant::now() < in_deadline {
         let next = tokio::time::timeout(Duration::from_secs(2), msgs.next()).await;
         if let Ok(Some(Ok(m))) = next {
-            let v: serde_json::Value =
-                serde_json::from_slice(&m.payload).expect("inbound is json");
+            let v: serde_json::Value = serde_json::from_slice(&m.payload).expect("inbound is json");
             let _ = m.ack().await;
             if v["body"]["marker"] == "KAFKA-TO-ORION"
                 && v["kafka_topic"] == IN_TOPIC
@@ -339,7 +342,10 @@ async fn kafka_bridge_roundtrips_both_directions() {
             }
         }
     }
-    assert!(got_inbound, "kafka->orion: marker never showed up on Orion subject");
+    assert!(
+        got_inbound,
+        "kafka->orion: marker never showed up on Orion subject"
+    );
 
     drop(stack);
 }

@@ -140,14 +140,12 @@ impl Store {
         namespace: &str,
         name: &str,
     ) -> Result<bool, StoreError> {
-        let res = sqlx::query(
-            "DELETE FROM resource WHERE kind = ? AND namespace = ? AND name = ?",
-        )
-        .bind(kind)
-        .bind(namespace)
-        .bind(name)
-        .execute(&self.pool)
-        .await?;
+        let res = sqlx::query("DELETE FROM resource WHERE kind = ? AND namespace = ? AND name = ?")
+            .bind(kind)
+            .bind(namespace)
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
         Ok(res.rows_affected() > 0)
     }
 }

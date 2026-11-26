@@ -13,7 +13,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use orion_opensearch_sink::{build_bulk_body, LogDoc};
+use orion_opensearch_sink::{LogDoc, build_bulk_body};
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -99,7 +99,11 @@ async fn main() -> Result<()> {
             for e in entries.into_iter().rev() {
                 since
                     .entry(name.clone())
-                    .and_modify(|t| if e.at > *t { *t = e.at })
+                    .and_modify(|t| {
+                        if e.at > *t {
+                            *t = e.at
+                        }
+                    })
                     .or_insert(e.at);
                 batch.push(LogDoc {
                     at: e.at.to_rfc3339(),

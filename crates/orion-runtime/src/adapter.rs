@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use orion_types::{Runtime, ResourceName};
+use orion_types::{ResourceName, Runtime};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;

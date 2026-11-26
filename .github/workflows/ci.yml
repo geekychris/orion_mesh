@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       nats:
-        image: nats:2.10
+        image: nats:2.10-alpine # has wget for the health check; the scratch image does not
         ports: [4222:4222]
         options: --health-cmd "wget -qO- http://localhost:8222/healthz" --health-interval 5s --health-timeout 3s --health-retries 5
     steps:

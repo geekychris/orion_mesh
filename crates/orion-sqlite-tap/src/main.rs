@@ -2,11 +2,11 @@
 //! new rows to a queue.
 
 use anyhow::{Context, Result};
-use orion_sqlite_tap::{build_select, CdcEvent};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use orion_sqlite_tap::{CdcEvent, build_select};
 use sqlx::AssertSqlSafe;
 use sqlx::Column;
 use sqlx::Row;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::str::FromStr;
 use std::time::Duration;
 

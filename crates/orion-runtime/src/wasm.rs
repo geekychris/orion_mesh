@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use wasmtime::{Config, Engine, Linker, Module, Store};
-use wasmtime_wasi::preview1::{self, WasiP1Ctx};
 use wasmtime_wasi::WasiCtxBuilder;
+use wasmtime_wasi::preview1::{self, WasiP1Ctx};
 
 pub struct WasmAdapter {
     engine: Engine,

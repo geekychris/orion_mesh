@@ -50,7 +50,10 @@ pub struct CreateArgs {
     #[arg(long = "out", default_value = "-")]
     pub out: PathBuf,
     /// Comma-separated kinds to include. Default: every declarative kind.
-    #[arg(long, default_value = "Service,Task,Schedule,Dataset,Model,Project,Volume,Network,Queue,Runtime,Capability,Policy,Integration,Secret")]
+    #[arg(
+        long,
+        default_value = "Service,Task,Schedule,Dataset,Model,Project,Volume,Network,Queue,Runtime,Capability,Policy,Integration,Secret"
+    )]
     pub kinds: String,
 }
 
@@ -170,7 +173,8 @@ mod tests {
         assert_eq!(docs.len(), 3);
         // Each doc is parseable YAML.
         for d in &docs {
-            let _: serde_yaml_ng::Value = serde_yaml_ng::from_str(d).unwrap_or_else(|e| panic!("doc not valid yaml: {e}\n{d}"));
+            let _: serde_yaml_ng::Value = serde_yaml_ng::from_str(d)
+                .unwrap_or_else(|e| panic!("doc not valid yaml: {e}\n{d}"));
         }
     }
 

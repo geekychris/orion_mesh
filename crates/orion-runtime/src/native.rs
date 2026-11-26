@@ -8,10 +8,12 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use uuid::Uuid;
 
+type ChildSlot = Arc<Mutex<Option<Child>>>;
+
 /// Forks a binary as a child process. When `LaunchSpec.log_sink` is `Some`,
 /// stdout/stderr are piped and forwarded line-by-line to the sink.
 pub struct NativeAdapter {
-    children: Arc<Mutex<HashMap<Uuid, Arc<Mutex<Option<Child>>>>>>,
+    children: Arc<Mutex<HashMap<Uuid, ChildSlot>>>,
 }
 
 impl NativeAdapter {
@@ -61,10 +63,20 @@ impl RuntimeAdapter for NativeAdapter {
 
         if let Some(sink) = spec.log_sink {
             if let Some(stdout) = child.stdout.take() {
-                tokio::spawn(forward_lines(spec.instance_id, OutStream::Stdout, stdout, sink.clone()));
+                tokio::spawn(forward_lines(
+                    spec.instance_id,
+                    OutStream::Stdout,
+                    stdout,
+                    sink.clone(),
+                ));
             }
             if let Some(stderr) = child.stderr.take() {
-                tokio::spawn(forward_lines(spec.instance_id, OutStream::Stderr, stderr, sink));
+                tokio::spawn(forward_lines(
+                    spec.instance_id,
+                    OutStream::Stderr,
+                    stderr,
+                    sink,
+                ));
             }
         }
 
@@ -130,12 +142,8 @@ impl RuntimeAdapter for NativeAdapter {
     }
 }
 
-async fn forward_lines<R>(
-    id: Uuid,
-    stream: OutStream,
-    reader: R,
-    sink: crate::LogSink,
-) where
+async fn forward_lines<R>(id: Uuid, stream: OutStream, reader: R, sink: crate::LogSink)
+where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     let mut lines = BufReader::new(reader).lines();
@@ -249,7 +257,10 @@ mod tests {
             name: "test".into(),
             runtime: Runtime::Native {
                 exec: "/bin/sh".into(),
-                args: vec!["-c".into(), "printf 'hello\\nworld\\n'; printf 'oops\\n' 1>&2".into()],
+                args: vec![
+                    "-c".into(),
+                    "printf 'hello\\nworld\\n'; printf 'oops\\n' 1>&2".into(),
+                ],
                 env: Default::default(),
             },
             log_sink: Some(tx),
@@ -268,11 +279,34 @@ mod tests {
         adapter.stop(id).await.ok();
 
         // Should have one stdout "hello", one "world", one stderr "oops".
-        let stdout_lines: Vec<_> = lines.iter().filter(|(_, s, _)| *s == OutStream::Stdout).map(|(_, _, l)| l.as_str()).collect();
-        let stderr_lines: Vec<_> = lines.iter().filter(|(_, s, _)| *s == OutStream::Stderr).map(|(_, _, l)| l.as_str()).collect();
-        assert!(stdout_lines.contains(&"hello"), "stdout missing: got {:?}", lines);
-        assert!(stdout_lines.contains(&"world"), "stdout missing: got {:?}", lines);
-        assert!(stderr_lines.contains(&"oops"),  "stderr missing: got {:?}", lines);
-        assert!(lines.iter().all(|(rid, _, _)| *rid == id), "instance_id mismatch");
+        let stdout_lines: Vec<_> = lines
+            .iter()
+            .filter(|(_, s, _)| *s == OutStream::Stdout)
+            .map(|(_, _, l)| l.as_str())
+            .collect();
+        let stderr_lines: Vec<_> = lines
+            .iter()
+            .filter(|(_, s, _)| *s == OutStream::Stderr)
+            .map(|(_, _, l)| l.as_str())
+            .collect();
+        assert!(
+            stdout_lines.contains(&"hello"),
+            "stdout missing: got {:?}",
+            lines
+        );
+        assert!(
+            stdout_lines.contains(&"world"),
+            "stdout missing: got {:?}",
+            lines
+        );
+        assert!(
+            stderr_lines.contains(&"oops"),
+            "stderr missing: got {:?}",
+            lines
+        );
+        assert!(
+            lines.iter().all(|(rid, _, _)| *rid == id),
+            "instance_id mismatch"
+        );
     }
 }

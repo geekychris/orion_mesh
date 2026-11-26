@@ -68,7 +68,11 @@ pub fn decide_reconcile(spec: &ServiceSpec, instances: &[InstanceObservation]) -
             continue;
         }
         // Either exited or unhealthy. Decide based on restart_policy.
-        let effective_code = if i.exited { i.exit_code.unwrap_or(0) } else { 1 };
+        let effective_code = if i.exited {
+            i.exit_code.unwrap_or(0)
+        } else {
+            1
+        };
         let restart = match spec.restart_policy {
             RestartPolicy::Always => true,
             RestartPolicy::OnFailure => effective_code != 0,
@@ -90,9 +94,7 @@ pub fn decide_reconcile(spec: &ServiceSpec, instances: &[InstanceObservation]) -
     // accounted for. Sort for stable ordering (helps tests + log output).
     let mut missing_slots: Vec<u32> = (0..desired)
         .filter(|i| {
-            !alive_slots.contains(i)
-                && !terminal_slots.contains(i)
-                && !restart_slots.contains(i)
+            !alive_slots.contains(i) && !terminal_slots.contains(i) && !restart_slots.contains(i)
         })
         .collect();
     missing_slots.sort_unstable();
@@ -134,12 +136,6 @@ pub enum StepStatus {
     Failed,
 }
 
-/// One step's lifecycle.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StepState {
-    pub status: StepStatus,
-}
-
 /// Reported exit kind for a Task instance — comes from `InstanceRecord.exit_kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskExitKind {
@@ -166,7 +162,11 @@ pub struct WorkflowAdvance {
 }
 
 pub fn advance_workflow(inputs: WorkflowInputs<'_>) -> WorkflowAdvance {
-    let WorkflowInputs { spec, progress, task_states } = inputs;
+    let WorkflowInputs {
+        spec,
+        progress,
+        task_states,
+    } = inputs;
     let mut next = progress.clone();
     // Initialize unseen steps as Pending.
     for s in &spec.steps {
@@ -174,14 +174,14 @@ pub fn advance_workflow(inputs: WorkflowInputs<'_>) -> WorkflowAdvance {
     }
     // Promote Running steps whose task has reported an exit.
     for s in &spec.steps {
-        if matches!(next.get(&s.name), Some(StepStatus::Running)) {
-            if let Some(kind) = task_states.get(&s.task.0) {
-                let new = match kind {
-                    TaskExitKind::Succeeded => StepStatus::Succeeded,
-                    TaskExitKind::Failed => StepStatus::Failed,
-                };
-                next.insert(s.name.clone(), new);
-            }
+        if matches!(next.get(&s.name), Some(StepStatus::Running))
+            && let Some(kind) = task_states.get(&s.task.0)
+        {
+            let new = match kind {
+                TaskExitKind::Succeeded => StepStatus::Succeeded,
+                TaskExitKind::Failed => StepStatus::Failed,
+            };
+            next.insert(s.name.clone(), new);
         }
     }
     // For each pending step: dispatch if deps are ready, or mark Failed if a
@@ -213,7 +213,11 @@ pub fn advance_workflow(inputs: WorkflowInputs<'_>) -> WorkflowAdvance {
         .values()
         .all(|s| matches!(s, StepStatus::Succeeded | StepStatus::Failed))
         && !next.is_empty();
-    WorkflowAdvance { next_progress: next, dispatch, finished }
+    WorkflowAdvance {
+        next_progress: next,
+        dispatch,
+        finished,
+    }
 }
 
 // ============================================================ Find API matcher
@@ -256,20 +260,20 @@ pub fn capabilities_match(
 }
 
 pub fn attr_op_matches(op: &orion_types::AttrOp, actual: &serde_json::Value) -> bool {
-    if let Some(v) = &op.eq {
-        if actual != v {
-            return false;
-        }
+    if let Some(v) = &op.eq
+        && actual != v
+    {
+        return false;
     }
-    if let Some(v) = &op.ne {
-        if actual == v {
-            return false;
-        }
+    if let Some(v) = &op.ne
+        && actual == v
+    {
+        return false;
     }
     let actual_num = actual.as_f64();
     let cmp = |lhs: &Option<serde_json::Number>, op: fn(f64, f64) -> bool| -> bool {
         match (lhs, actual_num) {
-            (Some(n), Some(a)) => n.as_f64().map_or(true, |x| op(a, x)),
+            (Some(n), Some(a)) => n.as_f64().is_none_or(|x| op(a, x)),
             (Some(_), None) => false,
             (None, _) => true,
         }
@@ -301,29 +305,61 @@ pub struct MetricsSnapshot {
 pub fn format_prometheus(m: &MetricsSnapshot) -> String {
     use std::fmt::Write;
     let mut out = String::with_capacity(1024);
-    let _ = writeln!(out, "# HELP orion_controller_uptime_seconds Seconds since controller start");
+    let _ = writeln!(
+        out,
+        "# HELP orion_controller_uptime_seconds Seconds since controller start"
+    );
     let _ = writeln!(out, "# TYPE orion_controller_uptime_seconds gauge");
     let _ = writeln!(out, "orion_controller_uptime_seconds {}", m.uptime_seconds);
-    let _ = writeln!(out, "# HELP orion_agents_total Agents the controller has seen ever");
+    let _ = writeln!(
+        out,
+        "# HELP orion_agents_total Agents the controller has seen ever"
+    );
     let _ = writeln!(out, "# TYPE orion_agents_total gauge");
     let _ = writeln!(out, "orion_agents_total {}", m.agents_total);
-    let _ = writeln!(out, "# HELP orion_agents_live Agents whose last heartbeat was within 30s");
+    let _ = writeln!(
+        out,
+        "# HELP orion_agents_live Agents whose last heartbeat was within 30s"
+    );
     let _ = writeln!(out, "# TYPE orion_agents_live gauge");
     let _ = writeln!(out, "orion_agents_live {}", m.agents_live);
-    let _ = writeln!(out, "# HELP orion_instances_alive Workload instances believed alive");
+    let _ = writeln!(
+        out,
+        "# HELP orion_instances_alive Workload instances believed alive"
+    );
     let _ = writeln!(out, "# TYPE orion_instances_alive gauge");
     let _ = writeln!(out, "orion_instances_alive {}", m.instances_alive);
-    let _ = writeln!(out, "# HELP orion_instances_exited Workload instances that have exited");
+    let _ = writeln!(
+        out,
+        "# HELP orion_instances_exited Workload instances that have exited"
+    );
     let _ = writeln!(out, "# TYPE orion_instances_exited counter");
     let _ = writeln!(out, "orion_instances_exited {}", m.instances_exited);
-    let _ = writeln!(out, "# HELP orion_instances_failed Workload instances that exited non-zero");
+    let _ = writeln!(
+        out,
+        "# HELP orion_instances_failed Workload instances that exited non-zero"
+    );
     let _ = writeln!(out, "# TYPE orion_instances_failed counter");
     let _ = writeln!(out, "orion_instances_failed {}", m.instances_failed);
-    let _ = writeln!(out, "# HELP orion_health_status Instances reporting a health status");
+    let _ = writeln!(
+        out,
+        "# HELP orion_health_status Instances reporting a health status"
+    );
     let _ = writeln!(out, "# TYPE orion_health_status gauge");
-    let _ = writeln!(out, "orion_health_status{{status=\"healthy\"}} {}", m.health_healthy);
-    let _ = writeln!(out, "orion_health_status{{status=\"unhealthy\"}} {}", m.health_unhealthy);
-    let _ = writeln!(out, "# HELP orion_schedule_fires_total Total Schedule fires since controller start");
+    let _ = writeln!(
+        out,
+        "orion_health_status{{status=\"healthy\"}} {}",
+        m.health_healthy
+    );
+    let _ = writeln!(
+        out,
+        "orion_health_status{{status=\"unhealthy\"}} {}",
+        m.health_unhealthy
+    );
+    let _ = writeln!(
+        out,
+        "# HELP orion_schedule_fires_total Total Schedule fires since controller start"
+    );
     let _ = writeln!(out, "# TYPE orion_schedule_fires_total counter");
     let _ = writeln!(out, "orion_schedule_fires_total {}", m.schedule_fires_total);
     out
@@ -337,6 +373,7 @@ pub fn format_prometheus(m: &MetricsSnapshot) -> String {
 /// Returns one entry per Workflow whose progress changed (or that has work to
 /// dispatch). Each entry carries the new step-status map, the steps to
 /// dispatch, and whether the workflow has finished.
+#[allow(dead_code)] // tested here; the runner calls advance_workflow per workflow
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowPlanEntry {
     pub workflow: String,
@@ -345,12 +382,14 @@ pub struct WorkflowPlanEntry {
     pub finished: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct DispatchSpec {
     pub step_name: String,
     pub task_name: String,
 }
 
+#[allow(dead_code)]
 pub fn plan_all_workflows(
     workflows: &[orion_types::Resource],
     progress: &std::collections::HashMap<String, std::collections::HashMap<String, StepStatus>>,
@@ -374,10 +413,13 @@ pub fn plan_all_workflows(
             .dispatch
             .iter()
             .filter_map(|step_name| {
-                spec.steps.iter().find(|s| &s.name == step_name).map(|s| DispatchSpec {
-                    step_name: step_name.clone(),
-                    task_name: s.task.0.clone(),
-                })
+                spec.steps
+                    .iter()
+                    .find(|s| &s.name == step_name)
+                    .map(|s| DispatchSpec {
+                        step_name: step_name.clone(),
+                        task_name: s.task.0.clone(),
+                    })
             })
             .collect();
         out.push(WorkflowPlanEntry {
@@ -396,10 +438,10 @@ pub fn plan_all_workflows(
 mod tests {
     use super::*;
     use orion_types::{
-        AttrChecks, AttrMatch, AttrOp, Capability, CapabilitySelector, RestartPolicy,
-        ResourceName, ServiceSpec, WorkflowSpec, WorkflowStep,
+        AttrChecks, AttrMatch, AttrOp, Capability, CapabilitySelector, ResourceName, RestartPolicy,
+        ServiceSpec, WorkflowSpec, WorkflowStep,
     };
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use uuid::Uuid;
 
@@ -455,7 +497,7 @@ mod tests {
     #[test]
     fn reconciler_redispatches_when_all_dead_under_always() {
         let i = obs(true, Some(1));
-        let action = decide_reconcile(&svc(1, RestartPolicy::Always), &[i.clone()]);
+        let action = decide_reconcile(&svc(1, RestartPolicy::Always), std::slice::from_ref(&i));
         match action {
             ReconcileAction::RedispatchAll { replicas, purge } => {
                 assert_eq!(replicas, 1);
@@ -468,17 +510,12 @@ mod tests {
     #[test]
     fn reconciler_on_failure_restarts_only_on_nonzero_exit() {
         // exit 0 → terminal, no restart
-        let action_ok = decide_reconcile(
-            &svc(1, RestartPolicy::OnFailure),
-            &[obs(true, Some(0))],
-        );
+        let action_ok = decide_reconcile(&svc(1, RestartPolicy::OnFailure), &[obs(true, Some(0))]);
         assert_eq!(action_ok, ReconcileAction::NoOp);
 
         // exit 7 → redispatch
-        let action_fail = decide_reconcile(
-            &svc(1, RestartPolicy::OnFailure),
-            &[obs(true, Some(7))],
-        );
+        let action_fail =
+            decide_reconcile(&svc(1, RestartPolicy::OnFailure), &[obs(true, Some(7))]);
         assert!(matches!(
             action_fail,
             ReconcileAction::RedispatchAll { replicas: 1, .. }
@@ -487,10 +524,7 @@ mod tests {
 
     #[test]
     fn reconciler_never_does_not_restart_even_on_failure() {
-        let action = decide_reconcile(
-            &svc(1, RestartPolicy::Never),
-            &[obs(true, Some(99))],
-        );
+        let action = decide_reconcile(&svc(1, RestartPolicy::Never), &[obs(true, Some(99))]);
         assert_eq!(action, ReconcileAction::NoOp);
     }
 
@@ -502,7 +536,10 @@ mod tests {
         let dead_id = dead.instance_id;
         let action = decide_reconcile(&svc(2, RestartPolicy::Always), &[alive, dead]);
         match action {
-            ReconcileAction::DispatchPartial { slot_indices, purge } => {
+            ReconcileAction::DispatchPartial {
+                slot_indices,
+                purge,
+            } => {
                 assert_eq!(slot_indices, vec![1]);
                 assert_eq!(purge, vec![dead_id]);
             }
@@ -523,7 +560,10 @@ mod tests {
             &[alive, dead_ok, dead_fail],
         );
         match action {
-            ReconcileAction::DispatchPartial { slot_indices, purge } => {
+            ReconcileAction::DispatchPartial {
+                slot_indices,
+                purge,
+            } => {
                 assert_eq!(slot_indices, vec![2, 3]);
                 assert_eq!(purge, vec![dead_fail_id]);
             }
@@ -536,7 +576,10 @@ mod tests {
         // desired=3, only slot 0 alive → slots [1, 2] missing.
         let action = decide_reconcile(&svc(3, RestartPolicy::Always), &[obs_at(0, false, None)]);
         match action {
-            ReconcileAction::DispatchPartial { slot_indices, purge } => {
+            ReconcileAction::DispatchPartial {
+                slot_indices,
+                purge,
+            } => {
                 assert_eq!(slot_indices, vec![1, 2]);
                 assert!(purge.is_empty());
             }
@@ -562,7 +605,10 @@ mod tests {
             &[alive_0, alive_1, unhealthy_2],
         );
         match action {
-            ReconcileAction::DispatchPartial { slot_indices, purge } => {
+            ReconcileAction::DispatchPartial {
+                slot_indices,
+                purge,
+            } => {
                 assert_eq!(slot_indices, vec![2]);
                 assert_eq!(purge, vec![unhealthy_id]);
             }
@@ -611,7 +657,11 @@ mod tests {
     }
 
     fn wf(steps: Vec<WorkflowStep>, continue_on_error: bool) -> WorkflowSpec {
-        WorkflowSpec { steps, continue_on_error, description: None }
+        WorkflowSpec {
+            steps,
+            continue_on_error,
+            description: None,
+        }
     }
 
     #[test]
@@ -627,7 +677,11 @@ mod tests {
         );
         let progress = HashMap::new();
         let task_states = HashMap::new();
-        let out = advance_workflow(WorkflowInputs { spec: &spec, progress: &progress, task_states: &task_states });
+        let out = advance_workflow(WorkflowInputs {
+            spec: &spec,
+            progress: &progress,
+            task_states: &task_states,
+        });
         assert_eq!(out.dispatch, vec!["a"]);
         assert_eq!(out.next_progress.get("a"), Some(&StepStatus::Running));
         assert_eq!(out.next_progress.get("b"), Some(&StepStatus::Pending));
@@ -653,7 +707,11 @@ mod tests {
         progress.insert("d".into(), StepStatus::Pending);
         let mut task_states = HashMap::new();
         task_states.insert("task-a".to_owned(), TaskExitKind::Succeeded);
-        let out = advance_workflow(WorkflowInputs { spec: &spec, progress: &progress, task_states: &task_states });
+        let out = advance_workflow(WorkflowInputs {
+            spec: &spec,
+            progress: &progress,
+            task_states: &task_states,
+        });
         assert_eq!(out.next_progress["a"], StepStatus::Succeeded);
         assert!(out.dispatch.contains(&"b".to_owned()));
         assert!(out.dispatch.contains(&"c".to_owned()));
@@ -667,13 +725,20 @@ mod tests {
     #[test]
     fn workflow_fail_fast_marks_dependents_failed_without_running_them() {
         // a → b
-        let spec = wf(vec![step("a", "task-a", &[]), step("b", "task-b", &["a"])], false);
+        let spec = wf(
+            vec![step("a", "task-a", &[]), step("b", "task-b", &["a"])],
+            false,
+        );
         let mut progress = HashMap::new();
         progress.insert("a".into(), StepStatus::Running);
         progress.insert("b".into(), StepStatus::Pending);
         let mut task_states = HashMap::new();
         task_states.insert("task-a".to_owned(), TaskExitKind::Failed);
-        let out = advance_workflow(WorkflowInputs { spec: &spec, progress: &progress, task_states: &task_states });
+        let out = advance_workflow(WorkflowInputs {
+            spec: &spec,
+            progress: &progress,
+            task_states: &task_states,
+        });
         assert_eq!(out.next_progress["a"], StepStatus::Failed);
         assert_eq!(out.next_progress["b"], StepStatus::Failed);
         assert!(out.dispatch.is_empty());
@@ -682,13 +747,20 @@ mod tests {
 
     #[test]
     fn workflow_continue_on_error_runs_downstream_anyway() {
-        let spec = wf(vec![step("a", "task-a", &[]), step("b", "task-b", &["a"])], true);
+        let spec = wf(
+            vec![step("a", "task-a", &[]), step("b", "task-b", &["a"])],
+            true,
+        );
         let mut progress = HashMap::new();
         progress.insert("a".into(), StepStatus::Running);
         progress.insert("b".into(), StepStatus::Pending);
         let mut task_states = HashMap::new();
         task_states.insert("task-a".to_owned(), TaskExitKind::Failed);
-        let out = advance_workflow(WorkflowInputs { spec: &spec, progress: &progress, task_states: &task_states });
+        let out = advance_workflow(WorkflowInputs {
+            spec: &spec,
+            progress: &progress,
+            task_states: &task_states,
+        });
         assert_eq!(out.next_progress["a"], StepStatus::Failed);
         assert_eq!(out.dispatch, vec!["b".to_owned()]);
         assert_eq!(out.next_progress["b"], StepStatus::Running);
@@ -697,14 +769,21 @@ mod tests {
 
     #[test]
     fn workflow_finishes_when_every_step_terminal() {
-        let spec = wf(vec![step("a", "task-a", &[]), step("b", "task-b", &["a"])], false);
+        let spec = wf(
+            vec![step("a", "task-a", &[]), step("b", "task-b", &["a"])],
+            false,
+        );
         let mut progress = HashMap::new();
         progress.insert("a".into(), StepStatus::Running);
         progress.insert("b".into(), StepStatus::Running);
         let mut task_states = HashMap::new();
         task_states.insert("task-a".to_owned(), TaskExitKind::Succeeded);
         task_states.insert("task-b".to_owned(), TaskExitKind::Succeeded);
-        let out = advance_workflow(WorkflowInputs { spec: &spec, progress: &progress, task_states: &task_states });
+        let out = advance_workflow(WorkflowInputs {
+            spec: &spec,
+            progress: &progress,
+            task_states: &task_states,
+        });
         assert_eq!(out.next_progress["a"], StepStatus::Succeeded);
         assert_eq!(out.next_progress["b"], StepStatus::Succeeded);
         assert!(out.finished);
@@ -738,10 +817,12 @@ mod tests {
         let sel_no = selector(&[("search", &[("dataset", AttrMatch::Equals(json!("c64")))])]);
         assert!(!capabilities_match(&advertised, &sel_no));
         // miss because the capability isn't advertised
-        let sel_missing_cap = selector(&[("llm", &[("dataset", AttrMatch::Equals(json!("amiga")))])]);
+        let sel_missing_cap =
+            selector(&[("llm", &[("dataset", AttrMatch::Equals(json!("amiga")))])]);
         assert!(!capabilities_match(&advertised, &sel_missing_cap));
         // miss because the attribute isn't on the cap
-        let sel_missing_attr = selector(&[("search", &[("model", AttrMatch::Equals(json!("amiga")))])]);
+        let sel_missing_attr =
+            selector(&[("search", &[("model", AttrMatch::Equals(json!("amiga")))])]);
         assert!(!capabilities_match(&advertised, &sel_missing_attr));
     }
 
@@ -769,9 +850,7 @@ mod tests {
     #[test]
     fn find_op_numeric_comparisons() {
         let advertised = vec![cap("llm", json!({ "min_vram_gb": 24 }))];
-        let mk = |op: AttrOp| {
-            selector(&[("llm", &[("min_vram_gb", AttrMatch::Op(op))])])
-        };
+        let mk = |op: AttrOp| selector(&[("llm", &[("min_vram_gb", AttrMatch::Op(op))])]);
         // gte: exact boundary passes
         assert!(capabilities_match(
             &advertised,
@@ -908,8 +987,12 @@ mod tests {
             }
             // Split on the LAST space — the value is always the last token.
             let (head, val) = line.rsplit_once(' ').expect("metric line has a space");
-            val.parse::<f64>().unwrap_or_else(|_| panic!("non-numeric value: {line}"));
-            assert!(!head.contains(' '), "metric name shouldn't contain raw space: {head}");
+            val.parse::<f64>()
+                .unwrap_or_else(|_| panic!("non-numeric value: {line}"));
+            assert!(
+                !head.contains(' '),
+                "metric name shouldn't contain raw space: {head}"
+            );
         }
     }
 
@@ -1041,7 +1124,10 @@ spec:
                 "llm",
                 &[(
                     "min_vram_gb",
-                    AttrMatch::Op(AttrOp { gte: Some(serde_json::Number::from(16)), ..Default::default() }),
+                    AttrMatch::Op(AttrOp {
+                        gte: Some(serde_json::Number::from(16)),
+                        ..Default::default()
+                    }),
                 )],
             ),
         ]);
@@ -1049,10 +1135,7 @@ spec:
         // One required cap absent → miss
         let sel_extra = selector(&[
             ("search", &[("dataset", AttrMatch::Equals(json!("amiga")))]),
-            (
-                "wasm",
-                &[("min_mem_mb", AttrMatch::Equals(json!(256)))],
-            ),
+            ("wasm", &[("min_mem_mb", AttrMatch::Equals(json!(256)))]),
         ]);
         assert!(!capabilities_match(&advertised, &sel_extra));
     }

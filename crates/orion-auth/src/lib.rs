@@ -18,7 +18,9 @@ pub const ENV_DISABLED: &str = "ORION_AUTH_DISABLED";
 
 #[derive(Debug, Error)]
 pub enum AuthError {
-    #[error("auth required but no token configured (set {ENV_TOKEN}, drop a token file, or set {ENV_DISABLED}=1 for dev)")]
+    #[error(
+        "auth required but no token configured (set {ENV_TOKEN}, drop a token file, or set {ENV_DISABLED}=1 for dev)"
+    )]
     MissingToken,
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
@@ -39,9 +41,7 @@ impl AuthMode {
     /// 4. Else [`AuthError::MissingToken`].
     pub fn from_env() -> Result<Self, AuthError> {
         if is_disabled() {
-            tracing::warn!(
-                "{ENV_DISABLED}=1 — auth disabled. Never run this way in production."
-            );
+            tracing::warn!("{ENV_DISABLED}=1 — auth disabled. Never run this way in production.");
             return Ok(AuthMode::Disabled);
         }
         if let Ok(t) = std::env::var(ENV_TOKEN) {

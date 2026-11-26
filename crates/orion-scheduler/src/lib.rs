@@ -36,10 +36,10 @@ pub fn filter_nodes_by_placement<'a>(
             if !placement.os.is_empty() && !placement.os.contains(&n.os) {
                 return false;
             }
-            if let Some(req) = &placement.gpu {
-                if !gpu_matches(&n.gpus, req) {
-                    return false;
-                }
+            if let Some(req) = &placement.gpu
+                && !gpu_matches(&n.gpus, req)
+            {
+                return false;
             }
             for (k, v) in &placement.node_labels {
                 if n.labels.get(k) != Some(v) {
@@ -104,25 +104,21 @@ where
         })
         .collect();
     // Higher score, then fewer running instances, then alphabetic node_id.
-    scored.sort_by(|a, b| {
-        b.0.cmp(&a.0)
-            .then(a.1.cmp(&b.1))
-            .then(a.2.cmp(b.2))
-    });
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(b.2)));
     scored.first().map(|(_, _, id)| (*id).to_owned())
 }
 
 fn gpu_matches(have: &[NodeGpu], need: &GpuRequirement) -> bool {
     have.iter().any(|g| {
-        if let Some(v) = need.vendor {
-            if g.vendor != v {
-                return false;
-            }
+        if let Some(v) = need.vendor
+            && g.vendor != v
+        {
+            return false;
         }
-        if let Some(min) = need.min_vram_gb {
-            if g.vram_gb < min {
-                return false;
-            }
+        if let Some(min) = need.min_vram_gb
+            && g.vram_gb < min
+        {
+            return false;
         }
         true
     })
@@ -161,8 +157,10 @@ mod tests {
             node("arm", Arch::Arm64, OperatingSystem::Linux),
             node("x86", Arch::X86_64, OperatingSystem::Linux),
         ];
-        let mut p = Placement::default();
-        p.arch = vec![Arch::Arm64];
+        let p = Placement {
+            arch: vec![Arch::Arm64],
+            ..Default::default()
+        };
         let out = filter_nodes_by_placement(&nodes, &p);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].node_id, "arm");
@@ -171,13 +169,26 @@ mod tests {
     #[test]
     fn gpu_requirement_filters_by_vendor_and_vram() {
         let mut a = node("a", Arch::X86_64, OperatingSystem::Linux);
-        a.gpus = vec![NodeGpu { vendor: GpuVendor::Nvidia, vram_gb: 24, name: None }];
+        a.gpus = vec![NodeGpu {
+            vendor: GpuVendor::Nvidia,
+            vram_gb: 24,
+            name: None,
+        }];
         let mut b = node("b", Arch::X86_64, OperatingSystem::Linux);
-        b.gpus = vec![NodeGpu { vendor: GpuVendor::Nvidia, vram_gb: 8, name: None }];
+        b.gpus = vec![NodeGpu {
+            vendor: GpuVendor::Nvidia,
+            vram_gb: 8,
+            name: None,
+        }];
         let nodes = vec![a, b];
 
-        let mut p = Placement::default();
-        p.gpu = Some(GpuRequirement { vendor: Some(GpuVendor::Nvidia), min_vram_gb: Some(16) });
+        let p = Placement {
+            gpu: Some(GpuRequirement {
+                vendor: Some(GpuVendor::Nvidia),
+                min_vram_gb: Some(16),
+            }),
+            ..Default::default()
+        };
         let out = filter_nodes_by_placement(&nodes, &p);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].node_id, "a");
@@ -211,8 +222,10 @@ mod tests {
     #[test]
     fn pick_best_returns_none_when_no_candidates_match() {
         let nodes = vec![node("a", Arch::Arm64, OperatingSystem::Linux)];
-        let mut p = Placement::default();
-        p.arch = vec![Arch::X86_64];
+        let p = Placement {
+            arch: vec![Arch::X86_64],
+            ..Default::default()
+        };
         let picked = pick_best(&nodes, &p, |_| NodeLoad::default());
         assert_eq!(picked, None);
     }

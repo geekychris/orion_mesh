@@ -11,24 +11,54 @@
 //! HTTP against `ORION_CONTROLLER_URL`.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Tools this server exposes, with descriptions Claude shows in its tool list.
 pub fn planned_tools() -> &'static [(&'static str, &'static str)] {
     &[
-        ("orion_list_nodes",       "List nodes the controller knows about (live agents + their inventory)"),
-        ("orion_list_services",    "List all Service resources"),
-        ("orion_list_tasks",       "List all Task resources"),
-        ("orion_list_queues",      "List all named Queues with their type + message backlog"),
-        ("orion_get_resource",     "Get a single resource by kind + name (returns the full YAML/JSON body)"),
-        ("orion_apply_resource",   "POST a YAML resource body to /v1/resources/apply"),
-        ("orion_delete_resource",  "Delete a resource by kind + name"),
-        ("orion_dispatch",         "Dispatch a Service or Task — controller picks a node and runs it"),
-        ("orion_logs",             "Get the recent log buffer for a workload (kind + name)"),
-        ("orion_find_capability",  "POST a capability selector to /v1/find; returns matching Services"),
-        ("orion_doctor",           "Health check across broker, controller, agents, JetStream"),
-        ("orion_diag_system",      "Diagnostic snapshot of the controller's process + agents + instances"),
-        ("orion_diag_jetstream",   "JetStream stream + consumer summary"),
+        (
+            "orion_list_nodes",
+            "List nodes the controller knows about (live agents + their inventory)",
+        ),
+        ("orion_list_services", "List all Service resources"),
+        ("orion_list_tasks", "List all Task resources"),
+        (
+            "orion_list_queues",
+            "List all named Queues with their type + message backlog",
+        ),
+        (
+            "orion_get_resource",
+            "Get a single resource by kind + name (returns the full YAML/JSON body)",
+        ),
+        (
+            "orion_apply_resource",
+            "POST a YAML resource body to /v1/resources/apply",
+        ),
+        ("orion_delete_resource", "Delete a resource by kind + name"),
+        (
+            "orion_dispatch",
+            "Dispatch a Service or Task — controller picks a node and runs it",
+        ),
+        (
+            "orion_logs",
+            "Get the recent log buffer for a workload (kind + name)",
+        ),
+        (
+            "orion_find_capability",
+            "POST a capability selector to /v1/find; returns matching Services",
+        ),
+        (
+            "orion_doctor",
+            "Health check across broker, controller, agents, JetStream",
+        ),
+        (
+            "orion_diag_system",
+            "Diagnostic snapshot of the controller's process + agents + instances",
+        ),
+        (
+            "orion_diag_jetstream",
+            "JetStream stream + consumer summary",
+        ),
     ]
 }
 
@@ -61,14 +91,22 @@ pub struct RpcError {
 
 impl RpcResponse {
     pub fn ok(id: Option<Value>, result: Value) -> Self {
-        Self { jsonrpc: "2.0", id, result: Some(result), error: None }
+        Self {
+            jsonrpc: "2.0",
+            id,
+            result: Some(result),
+            error: None,
+        }
     }
     pub fn err(id: Option<Value>, code: i32, message: impl Into<String>) -> Self {
         Self {
             jsonrpc: "2.0",
             id,
             result: None,
-            error: Some(RpcError { code, message: message.into() }),
+            error: Some(RpcError {
+                code,
+                message: message.into(),
+            }),
         }
     }
 }
@@ -187,9 +225,7 @@ pub async fn call_tool(
                 .get("selector")
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("missing 'selector'"))?;
-            client
-                .post(format!("{base}/v1/find"))
-                .json(&selector)
+            client.post(format!("{base}/v1/find")).json(&selector)
         }
         other => anyhow::bail!("unknown tool '{other}'"),
     };
@@ -216,8 +252,8 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> anyhow::Result<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::routing::{delete, get, post};
     use axum::Router;
+    use axum::routing::{get, post};
     use serde_json::json;
 
     #[test]
@@ -238,7 +274,10 @@ mod tests {
         let resp = tools_list_response(Some(json!(7)));
         assert_eq!(resp.id, Some(json!(7)));
         let result = resp.result.expect("ok response has result");
-        let tools = result.get("tools").and_then(|v| v.as_array()).expect("tools array");
+        let tools = result
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .expect("tools array");
         assert!(!tools.is_empty());
         let first = &tools[0];
         assert!(first.get("name").is_some());
@@ -296,10 +335,14 @@ mod tests {
     async fn call_tool_dispatches_get_list_endpoints() {
         let base = fake_controller().await;
         let client = reqwest::Client::new();
-        let nodes = call_tool(&client, &base, None, "orion_list_nodes", &json!({})).await.unwrap();
+        let nodes = call_tool(&client, &base, None, "orion_list_nodes", &json!({}))
+            .await
+            .unwrap();
         let arr = nodes.as_array().expect("array");
         assert_eq!(arr.len(), 1);
-        let svcs = call_tool(&client, &base, None, "orion_list_services", &json!({})).await.unwrap();
+        let svcs = call_tool(&client, &base, None, "orion_list_services", &json!({}))
+            .await
+            .unwrap();
         assert_eq!(svcs.as_array().unwrap()[0]["metadata"]["name"], "svc-a");
     }
 
@@ -379,9 +422,15 @@ mod tests {
     async fn call_tool_missing_string_arg_errors() {
         let base = fake_controller().await;
         let client = reqwest::Client::new();
-        let err = call_tool(&client, &base, None, "orion_get_resource", &json!({"kind": "Service"}))
-            .await
-            .unwrap_err();
+        let err = call_tool(
+            &client,
+            &base,
+            None,
+            "orion_get_resource",
+            &json!({"kind": "Service"}),
+        )
+        .await
+        .unwrap_err();
         assert!(format!("{err}").contains("missing"));
     }
 }

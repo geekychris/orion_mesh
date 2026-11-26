@@ -2,14 +2,18 @@
 
 use anyhow::Result;
 use clap::Parser;
-use orion_mcp::{call_tool, tools_list_response, RpcRequest, RpcResponse};
-use serde_json::{json, Value};
+use orion_mcp::{RpcRequest, RpcResponse, call_tool, tools_list_response};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 #[derive(Parser, Debug)]
 #[command(name = "orion-mcp", version, about = "OrionMesh MCP server")]
 struct Args {
-    #[arg(long, env = "ORION_CONTROLLER_URL", default_value = "http://127.0.0.1:7878")]
+    #[arg(
+        long,
+        env = "ORION_CONTROLLER_URL",
+        default_value = "http://127.0.0.1:7878"
+    )]
     controller: String,
     #[arg(long, env = "ORION_CLUSTER_TOKEN")]
     token: Option<String>,
@@ -68,8 +72,14 @@ async fn main() -> Result<()> {
                     .get("arguments")
                     .cloned()
                     .unwrap_or(Value::Object(Default::default()));
-                match call_tool(&client, &args.controller, args.token.as_deref(), &name, &arguments)
-                    .await
+                match call_tool(
+                    &client,
+                    &args.controller,
+                    args.token.as_deref(),
+                    &name,
+                    &arguments,
+                )
+                .await
                 {
                     Ok(result) => RpcResponse::ok(
                         id,

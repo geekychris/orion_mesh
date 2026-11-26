@@ -48,7 +48,10 @@ spec: { path: /mnt/scratch }
 "#,
     );
     let out = r.to_yaml().unwrap();
-    assert!(out.contains("apiVersion"), "apiVersion missing from output:\n{out}");
+    assert!(
+        out.contains("apiVersion"),
+        "apiVersion missing from output:\n{out}"
+    );
 }
 
 #[test]
@@ -83,7 +86,9 @@ status:
 "#;
     let r = roundtrip(yaml);
     match r.body {
-        ResourceBody::Service { status: Some(s), .. } => {
+        ResourceBody::Service {
+            status: Some(s), ..
+        } => {
             assert_eq!(s.phase, Phase::Running);
             assert_eq!(s.observed_generation, Some(5));
             assert_eq!(s.conditions.len(), 1);
@@ -125,7 +130,9 @@ spec:
 "#;
     let r = roundtrip(yaml);
     assert_eq!(r.name(), "amiga-search");
-    let ResourceBody::Service { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Service { spec, .. } = r.body else {
+        panic!()
+    };
     assert_eq!(spec.replicas, Some(1));
     assert!(spec.placement.arch.contains(&Arch::Arm64));
     assert_eq!(spec.capabilities.len(), 1);
@@ -152,7 +159,9 @@ spec:
     - { name: metrics, port: 9090, protocol: tcp }
 "#;
     let r = roundtrip(yaml);
-    let ResourceBody::Service { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Service { spec, .. } = r.body else {
+        panic!()
+    };
     assert!(matches!(
         spec.health,
         Some(HealthCheck::Http { ref path, port: 8080, interval_seconds: 5, failure_threshold: 2 })
@@ -178,7 +187,9 @@ spec:
   retry: { max_attempts: 3, backoff_seconds: 30 }
 "#;
     let r = roundtrip(yaml);
-    let ResourceBody::Task { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Task { spec, .. } = r.body else {
+        panic!()
+    };
     assert!(spec.prefer_data_locality);
     assert_eq!(spec.retry.unwrap().max_attempts, 3);
 }
@@ -225,7 +236,10 @@ spec:
     runtime: { kind: native, exec: /bin/true }
 "#,
     );
-    assert!(matches!(r.validate(), Err(ResourceError::ScheduleAmbiguous)));
+    assert!(matches!(
+        r.validate(),
+        Err(ResourceError::ScheduleAmbiguous)
+    ));
 }
 
 #[test]
@@ -237,7 +251,10 @@ metadata: { name: empty }
 spec: { cron: "0 0 * * *" }
 "#,
     );
-    assert!(matches!(r.validate(), Err(ResourceError::ScheduleAmbiguous)));
+    assert!(matches!(
+        r.validate(),
+        Err(ResourceError::ScheduleAmbiguous)
+    ));
 }
 
 // ============================================================================
@@ -258,7 +275,9 @@ spec:
   size_bytes: 12345678
 "#;
     let r = roundtrip(yaml);
-    let ResourceBody::Dataset { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Dataset { spec, .. } = r.body else {
+        panic!()
+    };
     assert_eq!(spec.locations.len(), 2);
     assert_eq!(spec.locations[0].access, DatasetAccess::Ro);
     assert_eq!(spec.locations[1].access, DatasetAccess::Rw);
@@ -282,7 +301,9 @@ spec:
   served_by: [mac-studio]
 "#;
     let r = roundtrip(yaml);
-    let ResourceBody::Model { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Model { spec, .. } = r.body else {
+        panic!()
+    };
     assert_eq!(spec.variants.len(), 2);
     assert_eq!(spec.variants[0].quant.as_deref(), Some("q4_k_m"));
     assert_eq!(spec.variants[1].memory_gb, Some(36.0));
@@ -310,7 +331,9 @@ spec:
   labels: { site: belmont, power: mains }
 "#;
     let r = roundtrip(yaml);
-    let ResourceBody::Node { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Node { spec, .. } = r.body else {
+        panic!()
+    };
     assert_eq!(spec.roles, vec![NodeRole::Worker, NodeRole::Llm]);
     assert_eq!(spec.gpus.len(), 1);
     assert_eq!(spec.gpus[0].vendor, GpuVendor::Nvidia);
@@ -336,7 +359,9 @@ spec:
   attempt: 1
 "#;
     let r = roundtrip(yaml);
-    let ResourceBody::Job { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Job { spec, .. } = r.body else {
+        panic!()
+    };
     assert_eq!(spec.exit_code, Some(0));
 }
 
@@ -353,7 +378,9 @@ spec:
     natsUrl: "nats://nats.belmont.local:4222"
 "#;
     let r = roundtrip(yaml);
-    let ResourceBody::Runtime { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Runtime { spec, .. } = r.body else {
+        panic!()
+    };
     assert_eq!(spec.runtime_kind, "orionmesh");
     assert_eq!(spec.config["natsUrl"], "nats://nats.belmont.local:4222");
 }
@@ -373,7 +400,9 @@ spec:
       protocol: { type: string, enum: [http, grpc] }
 "#;
     let r = roundtrip(yaml);
-    let ResourceBody::Capability { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Capability { spec, .. } = r.body else {
+        panic!()
+    };
     assert_eq!(spec.capability, "search");
 }
 
@@ -388,7 +417,9 @@ spec:
     gpu_hours_per_day: 12
 "#;
     let r = roundtrip(yaml);
-    let ResourceBody::Policy { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Policy { spec, .. } = r.body else {
+        panic!()
+    };
     assert_eq!(spec.policy_kind, "quota");
 }
 
@@ -403,7 +434,9 @@ spec:
     base_url: "http://ha.belmont.local:8123"
 "#;
     let r = roundtrip(yaml);
-    let ResourceBody::Integration { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Integration { spec, .. } = r.body else {
+        panic!()
+    };
     assert_eq!(spec.integration_kind, "home-assistant");
 }
 
@@ -423,7 +456,9 @@ spec:
 "#;
     let r = roundtrip(yaml);
     r.validate().expect("queue should validate");
-    let ResourceBody::Queue { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Queue { spec, .. } = r.body else {
+        panic!()
+    };
     assert_eq!(spec.queue_type, QueueType::Work);
     assert_eq!(spec.max_age_seconds, Some(3600));
 }
@@ -438,7 +473,9 @@ spec:
 "#;
     let r = roundtrip(yaml);
     r.validate().expect("queue should validate");
-    let ResourceBody::Queue { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Queue { spec, .. } = r.body else {
+        panic!()
+    };
     assert_eq!(spec.queue_type, QueueType::Topic);
 }
 
@@ -450,7 +487,9 @@ metadata: { name: defaults }
 spec: {}
 "#;
     let r = parse(yaml);
-    let ResourceBody::Queue { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Queue { spec, .. } = r.body else {
+        panic!()
+    };
     assert_eq!(spec.queue_type, QueueType::Work);
 }
 
@@ -464,7 +503,10 @@ spec: { type: work }
     let r = parse(yaml);
     let err = r.validate().expect_err("dotted queue name must fail");
     let s = format!("{err}");
-    assert!(s.contains("bad.name"), "error did not mention the name: {s}");
+    assert!(
+        s.contains("bad.name"),
+        "error did not mention the name: {s}"
+    );
 }
 
 #[test]
@@ -555,10 +597,15 @@ spec:
       data_locality: true
 "#;
     let r = roundtrip(yaml);
-    let ResourceBody::Task { spec, .. } = r.body else { panic!() };
+    let ResourceBody::Task { spec, .. } = r.body else {
+        panic!()
+    };
     assert_eq!(spec.placement.gpu.as_ref().unwrap().min_vram_gb, Some(24));
     assert!(spec.placement.prefer.data_locality);
-    assert_eq!(spec.placement.prefer.node_labels.get("power"), Some(&"mains".to_owned()));
+    assert_eq!(
+        spec.placement.prefer.node_labels.get("power"),
+        Some(&"mains".to_owned())
+    );
 }
 
 // ============================================================================

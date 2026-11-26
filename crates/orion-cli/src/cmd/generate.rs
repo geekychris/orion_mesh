@@ -324,10 +324,9 @@ async fn build_processor(ctx: &Ctx, a: ProcessorArgs) -> Result<String> {
             }
         }
         "java" => {
-            let jar = a
-                .template
-                .clone()
-                .unwrap_or_else(|| "examples/10-queues/java/target/orion-queue-processor.jar".to_owned());
+            let jar = a.template.clone().unwrap_or_else(|| {
+                "examples/10-queues/java/target/orion-queue-processor.jar".to_owned()
+            });
             let mut v: Vec<String> = Vec::new();
             if a.debug {
                 let suspend = if a.debug_suspend { 'y' } else { 'n' };
@@ -422,6 +421,7 @@ async fn build_processor(ctx: &Ctx, a: ProcessorArgs) -> Result<String> {
 
 // --------------------------------------------------------------------------- shared
 
+#[allow(clippy::too_many_arguments)]
 fn build_workload_spec(
     runtime: &str,
     exec: Option<&str>,
@@ -441,9 +441,9 @@ fn build_workload_spec(
     if !ports.is_empty() {
         let mut out = Vec::new();
         for p in ports {
-            let (name, port) = p.split_once(':').ok_or_else(|| {
-                anyhow::anyhow!("--port must look like NAME:PORT, got {p:?}")
-            })?;
+            let (name, port) = p
+                .split_once(':')
+                .ok_or_else(|| anyhow::anyhow!("--port must look like NAME:PORT, got {p:?}"))?;
             let mut m = serde_yaml_ng::Mapping::new();
             m.insert(Y::from("name"), Y::from(name));
             m.insert(Y::from("port"), Y::from(port.parse::<u16>()?));
@@ -470,15 +470,13 @@ fn build_runtime_block(
     m.insert(Y::from("kind"), Y::from(runtime));
     match runtime {
         "native" => {
-            let exec = exec.ok_or_else(|| {
-                anyhow::anyhow!("--exec is required when --runtime=native")
-            })?;
+            let exec =
+                exec.ok_or_else(|| anyhow::anyhow!("--exec is required when --runtime=native"))?;
             m.insert(Y::from("exec"), Y::from(exec));
         }
         "docker" => {
-            let image = image.ok_or_else(|| {
-                anyhow::anyhow!("--image is required when --runtime=docker")
-            })?;
+            let image = image
+                .ok_or_else(|| anyhow::anyhow!("--image is required when --runtime=docker"))?;
             m.insert(Y::from("image"), Y::from(image));
         }
         _ => anyhow::bail!("unsupported runtime kind: {runtime}"),
@@ -492,9 +490,9 @@ fn build_runtime_block(
     if !env.is_empty() {
         let mut em = serde_yaml_ng::Mapping::new();
         for kv in env {
-            let (k, v) = kv.split_once('=').ok_or_else(|| {
-                anyhow::anyhow!("--env must look like K=V, got {kv:?}")
-            })?;
+            let (k, v) = kv
+                .split_once('=')
+                .ok_or_else(|| anyhow::anyhow!("--env must look like K=V, got {kv:?}"))?;
             em.insert(Y::from(k), Y::from(v));
         }
         m.insert(Y::from("env"), Y::from(em));
@@ -538,18 +536,13 @@ fn parse_duration_seconds(s: Option<&str>) -> Result<Option<u64>> {
     Ok(Some(n * mult))
 }
 
-fn emit(
-    kind: &str,
-    name: &str,
-    labels: Option<serde_yaml_ng::Mapping>,
-    spec: Y,
-) -> Result<String> {
+fn emit(kind: &str, name: &str, labels: Option<serde_yaml_ng::Mapping>, spec: Y) -> Result<String> {
     let mut metadata = serde_yaml_ng::Mapping::new();
     metadata.insert(Y::from("name"), Y::from(name));
-    if let Some(l) = labels {
-        if !l.is_empty() {
-            metadata.insert(Y::from("labels"), Y::from(l));
-        }
+    if let Some(l) = labels
+        && !l.is_empty()
+    {
+        metadata.insert(Y::from("labels"), Y::from(l));
     }
     let mut top = serde_yaml_ng::Mapping::new();
     top.insert(Y::from("apiVersion"), Y::from("orionmesh.dev/v1"));
@@ -602,7 +595,10 @@ fn build_sidecar(a: SidecarArgs) -> Result<String> {
     env_map.insert(Y::from("ORION_QUEUE_NAME"), Y::from(a.queue.clone()));
     env_map.insert(Y::from("ORION_QUEUE_SUBJECT"), Y::from(queue_subject));
     env_map.insert(Y::from("ORION_QUEUE_STREAM"), Y::from(queue_stream));
-    env_map.insert(Y::from("SIDECAR_INTERVAL_SECONDS"), Y::from(interval_str.as_str()));
+    env_map.insert(
+        Y::from("SIDECAR_INTERVAL_SECONDS"),
+        Y::from(interval_str.as_str()),
+    );
     if let Some(f) = &a.filter {
         env_map.insert(Y::from("SIDECAR_FILTER_REGEX"), Y::from(f.as_str()));
     }

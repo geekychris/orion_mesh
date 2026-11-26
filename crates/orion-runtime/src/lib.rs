@@ -18,9 +18,9 @@ pub use adapter::{
 };
 pub use docker::DockerAdapter;
 pub use native::NativeAdapter;
+pub use secrets::{PlaintextResolver, SecretError, SecretResolver};
 #[cfg(feature = "wasm")]
 pub use wasm::WasmAdapter;
-pub use secrets::{PlaintextResolver, SecretError, SecretResolver};
 
 use std::sync::Arc;
 use thiserror::Error;

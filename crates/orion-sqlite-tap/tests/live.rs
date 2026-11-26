@@ -16,7 +16,7 @@ const STREAM: &str = "ORION_QUEUE_SQLITE_CDC_TEST";
 struct Stack {
     nats: Child,
     tap: Child,
-    db_path: tempfile::NamedTempFile,
+    _db_path: tempfile::NamedTempFile,
 }
 
 impl Drop for Stack {
@@ -79,12 +79,10 @@ async fn sqlite_cdc_publishes_new_rows_to_queue() {
         .expect("connect");
     // Stay on default journal_mode (DELETE) so the tap pool sees data with no
     // WAL coordination.
-    sqlx::query(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer TEXT, total_cents INTEGER)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer TEXT, total_cents INTEGER)")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO orders (customer, total_cents) VALUES ('alpha', 100), ('beta', 200)")
         .execute(&pool)
         .await
@@ -99,10 +97,7 @@ async fn sqlite_cdc_publishes_new_rows_to_queue() {
     let mut tap = Command::new(bin)
         .env("SQLITE_URL", &db_url)
         .env("SQLITE_TABLE", "orders")
-        .env(
-            "NATS_URL",
-            format!("nats://127.0.0.1:{NATS_PORT}"),
-        )
+        .env("NATS_URL", format!("nats://127.0.0.1:{NATS_PORT}"))
         .env("ORION_QUEUE_SUBJECT", SUBJECT)
         .env("ORION_QUEUE_STREAM", STREAM)
         .env("TAP_INTERVAL_SECONDS", "1")
@@ -119,7 +114,11 @@ async fn sqlite_cdc_publishes_new_rows_to_queue() {
         panic!("tap exited early ({status:?}); stderr:\n{log}");
     }
 
-    let mut stack = Stack { nats, tap, db_path: db_file };
+    let stack = Stack {
+        nats,
+        tap,
+        _db_path: db_file,
+    };
 
     // 4. subscribe to the queue ourselves; wait for the first 2 messages
     let nc = async_nats::connect(format!("nats://127.0.0.1:{NATS_PORT}"))
@@ -182,7 +181,9 @@ async fn sqlite_cdc_publishes_new_rows_to_queue() {
             Ok(Some(Ok(m))) => m,
             other => {
                 let log = std::fs::read_to_string(&tap_log).unwrap_or_default();
-                panic!("missing message: {other:?}\ngot so far: {received:?}\n---tap stderr---\n{log}");
+                panic!(
+                    "missing message: {other:?}\ngot so far: {received:?}\n---tap stderr---\n{log}"
+                );
             }
         };
         let v: serde_json::Value = serde_json::from_slice(&m.payload).unwrap();
@@ -195,7 +196,10 @@ async fn sqlite_cdc_publishes_new_rows_to_queue() {
     // 5. assertions
     eprintln!("=== received {} messages ===", received.len());
     for (i, r) in received.iter().enumerate() {
-        eprintln!("  [{i}] rowid={} customer={}", r["rowid"], r["row"]["customer"]);
+        eprintln!(
+            "  [{i}] rowid={} customer={}",
+            r["rowid"], r["row"]["customer"]
+        );
     }
     assert_eq!(received.len(), 3);
     for r in &received {

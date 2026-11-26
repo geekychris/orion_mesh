@@ -24,6 +24,7 @@ pub enum Sub {
     Pub(PubArgs),
     /// Subscribe and print rows. `--group` joins as a shared durable;
     /// otherwise a unique per-process durable is used.
+    #[allow(clippy::enum_variant_names)] // the CLI verb is `orion queue sub`
     Sub(SubArgs),
     /// List queues with declared type and live stream/consumer counts.
     Ls,
@@ -224,10 +225,10 @@ async fn run_sub(ctx: &Ctx, args: SubArgs) -> Result<()> {
             .map(|s| s.to_owned())
             .unwrap_or_else(|_| format!("<{} bytes>", m.payload.len()));
         let _ = writeln!(outlock, "{seq}\t{}\t{payload}", m.subject);
-        if !args.no_ack {
-            if let Err(e) = m.ack().await {
-                eprintln!("(ack failed: {e})");
-            }
+        if !args.no_ack
+            && let Err(e) = m.ack().await
+        {
+            eprintln!("(ack failed: {e})");
         }
         n += 1;
         if !args.forever && args.limit > 0 && n >= args.limit {
@@ -263,20 +264,16 @@ async fn run_ls(ctx: &Ctx) -> Result<()> {
         let (subject, cfg) = orion_bus::client::queue_stream_config(&name, &spec);
         let mut msgs = String::from("-");
         let mut consumers = String::from("-");
-        if let Some(js) = &js {
-            if let Ok(mut stream) = js.get_stream(&cfg.name).await {
-                if let Ok(info) = stream.info().await {
-                    msgs = info.state.messages.to_string();
-                    consumers = info.state.consumer_count.to_string();
-                }
-            }
+        if let Some(js) = &js
+            && let Ok(mut stream) = js.get_stream(&cfg.name).await
+            && let Ok(info) = stream.info().await
+        {
+            msgs = info.state.messages.to_string();
+            consumers = info.state.consumer_count.to_string();
         }
         rows.push(vec![name, qtype.to_owned(), subject, msgs, consumers]);
     }
-    output::render_table(
-        &["name", "type", "subject", "messages", "consumers"],
-        &rows,
-    );
+    output::render_table(&["name", "type", "subject", "messages", "consumers"], &rows);
     Ok(())
 }
 
@@ -332,7 +329,10 @@ async fn run_describe(ctx: &Ctx, args: DescribeArgs) -> Result<()> {
 
 async fn run_purge(ctx: &Ctx, args: PurgeArgs) -> Result<()> {
     if !args.yes {
-        eprint!("This will delete all messages from queue {}. Type the name to confirm: ", args.name);
+        eprint!(
+            "This will delete all messages from queue {}. Type the name to confirm: ",
+            args.name
+        );
         let _ = std::io::stderr().flush();
         let mut line = String::new();
         std::io::stdin().read_line(&mut line)?;
@@ -366,13 +366,13 @@ async fn fetch_queue(ctx: &Ctx, name: &str) -> Result<Option<QueueSpec>> {
 async fn fetch_queue_resource(ctx: &Ctx, name: &str) -> Result<Option<Resource>> {
     let url = format!("{}/v1/resources/Queue/{name}", ctx.controller);
     let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(t) = &ctx.token {
-        if !t.is_empty() {
-            headers.insert(
-                reqwest::header::AUTHORIZATION,
-                reqwest::header::HeaderValue::from_str(&format!("Bearer {t}"))?,
-            );
-        }
+    if let Some(t) = &ctx.token
+        && !t.is_empty()
+    {
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {t}"))?,
+        );
     }
     let resp = reqwest::Client::builder()
         .default_headers(headers)
@@ -391,5 +391,8 @@ fn hostname() -> String {
     std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("HOST"))
         .unwrap_or_else(|_| "host".into())
-        .replace(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'), "_")
+        .replace(
+            |c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "_",
+        )
 }
