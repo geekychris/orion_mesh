@@ -43,7 +43,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum ResourceError {
     #[error("invalid resource yaml: {0}")]
-    Yaml(#[from] serde_yml::Error),
+    Yaml(#[from] serde_yaml_ng::Error),
     #[error("invalid resource json: {0}")]
     Json(#[from] serde_json::Error),
     #[error("schedule must set exactly one of `task` or `taskTemplate`")]
@@ -54,11 +54,11 @@ pub enum ResourceError {
 
 impl Resource {
     pub fn from_yaml(s: &str) -> Result<Self, ResourceError> {
-        Ok(serde_yml::from_str(s)?)
+        Ok(serde_yaml_ng::from_str(s)?)
     }
 
     pub fn to_yaml(&self) -> Result<String, ResourceError> {
-        Ok(serde_yml::to_string(self)?)
+        Ok(serde_yaml_ng::to_string(self)?)
     }
 
     pub fn from_json(s: &str) -> Result<Self, ResourceError> {

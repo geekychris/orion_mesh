@@ -150,18 +150,18 @@ pub async fn run_exec(ctx: &Ctx, args: ExecArgs) -> Result<()> {
         .clone()
         .unwrap_or_else(|| format!("oexec-{}", short_id()));
     // Build a Task YAML inline.
-    let mut env_map = serde_yml::Mapping::new();
+    let mut env_map = serde_yaml_ng::Mapping::new();
     for kv in &args.env {
         if let Some((k, v)) = kv.split_once('=') {
             env_map.insert(k.into(), v.into());
         }
     }
-    let mut runtime = serde_yml::Mapping::new();
+    let mut runtime = serde_yaml_ng::Mapping::new();
     runtime.insert("kind".into(), args.runtime.as_str().into());
     match args.runtime.as_str() {
         "native" => {
             runtime.insert("exec".into(), args.argv[0].as_str().into());
-            let rest: Vec<serde_yml::Value> = args.argv[1..]
+            let rest: Vec<serde_yaml_ng::Value> = args.argv[1..]
                 .iter()
                 .map(|s| s.as_str().into())
                 .collect();
@@ -173,7 +173,8 @@ pub async fn run_exec(ctx: &Ctx, args: ExecArgs) -> Result<()> {
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("--image required for docker runtime"))?;
             runtime.insert("image".into(), image.into());
-            let argv: Vec<serde_yml::Value> = args.argv.iter().map(|s| s.as_str().into()).collect();
+            let argv: Vec<serde_yaml_ng::Value> =
+                args.argv.iter().map(|s| s.as_str().into()).collect();
             runtime.insert("args".into(), argv.into());
         }
         _ => unreachable!(),
@@ -181,16 +182,16 @@ pub async fn run_exec(ctx: &Ctx, args: ExecArgs) -> Result<()> {
     if !env_map.is_empty() {
         runtime.insert("env".into(), env_map.into());
     }
-    let mut spec = serde_yml::Mapping::new();
+    let mut spec = serde_yaml_ng::Mapping::new();
     spec.insert("runtime".into(), runtime.into());
-    let mut metadata = serde_yml::Mapping::new();
+    let mut metadata = serde_yaml_ng::Mapping::new();
     metadata.insert("name".into(), name.as_str().into());
-    let mut top = serde_yml::Mapping::new();
+    let mut top = serde_yaml_ng::Mapping::new();
     top.insert("apiVersion".into(), "orionmesh.dev/v1".into());
     top.insert("kind".into(), "Task".into());
     top.insert("metadata".into(), metadata.into());
     top.insert("spec".into(), spec.into());
-    let yaml = serde_yml::to_string(&serde_yml::Value::Mapping(top))?;
+    let yaml = serde_yaml_ng::to_string(&serde_yaml_ng::Value::Mapping(top))?;
 
     http::post_yaml(ctx, "/v1/resources/apply", yaml.clone())
         .await

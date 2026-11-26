@@ -4,6 +4,7 @@
 use anyhow::{Context, Result};
 use orion_sqlite_tap::{build_select, CdcEvent};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::AssertSqlSafe;
 use sqlx::Column;
 use sqlx::Row;
 use std::str::FromStr;
@@ -55,7 +56,7 @@ async fn main() -> Result<()> {
         0
     } else {
         let sql = format!("SELECT COALESCE(MAX(rowid), 0) AS m FROM \"{table}\"");
-        let row = sqlx::query(&sql).fetch_one(&pool).await?;
+        let row = sqlx::query(AssertSqlSafe(sql)).fetch_one(&pool).await?;
         row.try_get("m").unwrap_or(0)
     };
 
@@ -64,7 +65,7 @@ async fn main() -> Result<()> {
     loop {
         ticker.tick().await;
         let sql = build_select(&table, cursor);
-        let rows = match sqlx::query(&sql).fetch_all(&pool).await {
+        let rows = match sqlx::query(AssertSqlSafe(sql)).fetch_all(&pool).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, "select failed");
