@@ -23,7 +23,12 @@ pub struct FileEvent {
 }
 
 /// Build a `FileEvent` for a line. Pure helper.
-pub fn make_event(subject: &str, path: &Path, line: &str, at: chrono::DateTime<chrono::Utc>) -> FileEvent {
+pub fn make_event(
+    subject: &str,
+    path: &Path,
+    line: &str,
+    at: chrono::DateTime<chrono::Utc>,
+) -> FileEvent {
     FileEvent {
         path: path.to_string_lossy().into_owned(),
         line: line.trim_end_matches(['\n', '\r']).to_owned(),

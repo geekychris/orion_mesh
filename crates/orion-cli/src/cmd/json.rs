@@ -98,7 +98,10 @@ pub async fn run(_ctx: &Ctx, args: Args) -> Result<()> {
                 Some(caps) => {
                     let mut obj = Map::new();
                     for (i, n) in names.iter().enumerate() {
-                        let value = caps.get(i).map(|m| m.as_str().to_owned()).unwrap_or_default();
+                        let value = caps
+                            .get(i)
+                            .map(|m| m.as_str().to_owned())
+                            .unwrap_or_default();
                         let key = n
                             .map(|s| s.to_owned())
                             .unwrap_or_else(|| format!("col_{i}"));
@@ -124,14 +127,15 @@ pub async fn run(_ctx: &Ctx, args: Args) -> Result<()> {
         };
         let mut headers = args.headers.clone();
         let mut iter = lines.peekable();
-        if headers.is_empty() && !args.no_header {
-            if let Some(first) = iter.next() {
-                let first = first.context("reading stdin")?;
-                headers = first
-                    .split(sep)
-                    .map(|s| normalize_header(s, args.no_trim))
-                    .collect();
-            }
+        if headers.is_empty()
+            && !args.no_header
+            && let Some(first) = iter.next()
+        {
+            let first = first.context("reading stdin")?;
+            headers = first
+                .split(sep)
+                .map(|s| normalize_header(s, args.no_trim))
+                .collect();
         }
         for line in iter {
             let line = line.context("reading stdin")?;
@@ -159,7 +163,10 @@ pub async fn run(_ctx: &Ctx, args: Args) -> Result<()> {
             match first {
                 Some(h) => {
                     let (hs, starts) = parse_header_row(&h);
-                    headers = hs.into_iter().map(|s| normalize_header(&s, args.no_trim)).collect();
+                    headers = hs
+                        .into_iter()
+                        .map(|s| normalize_header(&s, args.no_trim))
+                        .collect();
                     col_starts = starts;
                 }
                 None => return Ok(()),
@@ -201,10 +208,20 @@ fn pack_row(headers: &[String], cells: &[String], no_trim: bool) -> Map<String, 
 }
 
 fn normalize_header(s: &str, no_trim: bool) -> String {
-    let s = if no_trim { s.to_owned() } else { s.trim().to_owned() };
+    let s = if no_trim {
+        s.to_owned()
+    } else {
+        s.trim().to_owned()
+    };
     s.to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 

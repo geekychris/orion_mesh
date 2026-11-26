@@ -46,7 +46,11 @@ async fn main() -> Result<()> {
     let label = args
         .label
         .clone()
-        .or_else(|| std::env::var("ORION_REPLICA_INDEX").ok().map(|i| format!("r{i}")))
+        .or_else(|| {
+            std::env::var("ORION_REPLICA_INDEX")
+                .ok()
+                .map(|i| format!("r{i}"))
+        })
         .unwrap_or_else(|| "demo".into());
 
     let mode = if args.jetstream {
@@ -106,10 +110,16 @@ async fn run_jetstream(label: &str, args: &Args, nc: async_nats::Client) -> Resu
         ..Default::default()
     };
     let stream = js.get_or_create_stream(stream_cfg).await?;
-    println!("[demo-sub:{label}] stream {} ready (subjects: {subj_wildcard})", args.stream);
+    println!(
+        "[demo-sub:{label}] stream {} ready (subjects: {subj_wildcard})",
+        args.stream
+    );
     // When `durable_name` is set, multiple subscribers using the same name
     // share the load AND survive restart with replay-from-last-ack.
-    let durable_name = args.durable.clone().unwrap_or_else(|| format!("ephemeral-{label}"));
+    let durable_name = args
+        .durable
+        .clone()
+        .unwrap_or_else(|| format!("ephemeral-{label}"));
     let cfg = jetstream::consumer::pull::Config {
         durable_name: Some(durable_name.clone()),
         ..Default::default()

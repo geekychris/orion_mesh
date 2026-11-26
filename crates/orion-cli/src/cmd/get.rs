@@ -52,8 +52,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<()> {
             // `parts[0]` = kind (possibly pluralised), `parts[1]` = optional name.
             let kind = super::util::canonical_kind(&parts[0]);
             if let Some(name) = parts.get(1) {
-                let v: Value =
-                    http::get_json(ctx, &format!("/v1/resources/{kind}/{name}")).await?;
+                let v: Value = http::get_json(ctx, &format!("/v1/resources/{kind}/{name}")).await?;
                 match ctx.output {
                     output::Format::Json => output::print_json(&v)?,
                     _ => output::print_yaml(&v)?,
@@ -126,7 +125,11 @@ fn render_resource_table(v: &Value) {
                 .to_owned(),
             r.get("metadata")
                 .and_then(|m| m.get("generation"))
-                .map(|g| g.as_u64().map(|n| n.to_string()).unwrap_or_else(|| g.to_string()))
+                .map(|g| {
+                    g.as_u64()
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| g.to_string())
+                })
                 .unwrap_or_else(|| "-".into()),
             r.get("status")
                 .and_then(|s| s.get("phase"))

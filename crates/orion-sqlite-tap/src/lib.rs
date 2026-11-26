@@ -18,7 +18,9 @@ pub struct CdcEvent {
 pub fn build_select(table: &str, since: i64) -> String {
     // Alias rowid → _orion_rowid so sqlx can decode it by name (raw `rowid`
     // returns ColumnNotFound when reading the row).
-    format!("SELECT rowid AS _orion_rowid, * FROM \"{table}\" WHERE rowid > {since} ORDER BY rowid ASC LIMIT 1000")
+    format!(
+        "SELECT rowid AS _orion_rowid, * FROM \"{table}\" WHERE rowid > {since} ORDER BY rowid ASC LIMIT 1000"
+    )
 }
 
 #[cfg(test)]

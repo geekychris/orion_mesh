@@ -53,10 +53,10 @@ async fn wait_for_http(url: &str, max_ms: u64) {
         .build()
         .unwrap();
     while std::time::Instant::now() < deadline {
-        if let Ok(r) = http.get(url).send().await {
-            if r.status().is_success() {
-                return;
-            }
+        if let Ok(r) = http.get(url).send().await
+            && r.status().is_success()
+        {
+            return;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -111,9 +111,9 @@ async fn opensearch_sink_ships_log_lines_to_real_opensearch() {
     wait_for_http(&endpoint, 90_000).await; // OpenSearch first boot can take ~60s
 
     // Stand up a fake controller serving one log archive page.
+    use axum::Router;
     use axum::extract::Path;
     use axum::routing::get;
-    use axum::Router;
     let archive = serde_json::json!([
         {
             "at": "2026-06-30T12:00:00Z",
@@ -163,7 +163,10 @@ async fn opensearch_sink_ships_log_lines_to_real_opensearch() {
     let sink = Command::new(bin)
         .env("OPENSEARCH_URL", &endpoint)
         .env("OPENSEARCH_INDEX", "orion-sink-test")
-        .env("ORION_CONTROLLER_URL", format!("http://127.0.0.1:{FAKE_CTRL_PORT}"))
+        .env(
+            "ORION_CONTROLLER_URL",
+            format!("http://127.0.0.1:{FAKE_CTRL_PORT}"),
+        )
         .env("LOG_SOURCE_KIND", "Service")
         .env("LOG_SOURCE_NAMES", "web")
         .env("SINK_INTERVAL_SECONDS", "2")
@@ -188,7 +191,9 @@ async fn opensearch_sink_ships_log_lines_to_real_opensearch() {
             .send()
             .await;
         let resp = http
-            .get(format!("{endpoint}/orion-sink-test/_search?q=line:OPENSEARCH-TEST-MARKER&size=10"))
+            .get(format!(
+                "{endpoint}/orion-sink-test/_search?q=line:OPENSEARCH-TEST-MARKER&size=10"
+            ))
             .send()
             .await;
         let body: serde_json::Value = match resp {
@@ -208,7 +213,9 @@ async fn opensearch_sink_ships_log_lines_to_real_opensearch() {
 
     // Sample a hit and assert shape.
     let body: serde_json::Value = http
-        .get(format!("{endpoint}/orion-sink-test/_search?size=1&q=line:OPENSEARCH-TEST-MARKER"))
+        .get(format!(
+            "{endpoint}/orion-sink-test/_search?size=1&q=line:OPENSEARCH-TEST-MARKER"
+        ))
         .send()
         .await
         .unwrap()
@@ -219,7 +226,12 @@ async fn opensearch_sink_ships_log_lines_to_real_opensearch() {
     assert_eq!(first["kind"], "Service");
     assert_eq!(first["name"], "web");
     assert_eq!(first["stream"], "stdout");
-    assert!(first["line"].as_str().unwrap().contains("OPENSEARCH-TEST-MARKER"));
+    assert!(
+        first["line"]
+            .as_str()
+            .unwrap()
+            .contains("OPENSEARCH-TEST-MARKER")
+    );
 
     drop(stack);
 }

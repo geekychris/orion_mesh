@@ -11,14 +11,16 @@ use clap::Parser;
 use futures::StreamExt;
 use orion_auth::AuthMode;
 use orion_bus::{
-    ControlRun, ControlStop, Envelope, Heartbeat, HealthStatus, LogLine, LogStream, NodeInventory,
+    ControlRun, ControlStop, Envelope, HealthStatus, Heartbeat, LogLine, LogStream, NodeInventory,
     ServiceHealth, TaskEvent, TaskOutcome, Topic, WorkloadKind,
 };
 use orion_runtime::{
     DockerAdapter, ExitNotice, ExitSink, LaunchSpec, LogSink, NativeAdapter, OutStream,
     RuntimeAdapter, RuntimeRegistry,
 };
-use orion_types::{Acceleration, Arch, GpuVendor, HealthCheck, NodeGpu, NodeId, OperatingSystem, ResourceName};
+use orion_types::{
+    Acceleration, Arch, GpuVendor, HealthCheck, NodeGpu, NodeId, OperatingSystem, ResourceName,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -50,6 +52,7 @@ struct Args {
 /// receives a `ControlRun`; used to label outgoing `LogLine`s and to answer
 /// /v1/instances queries from the controller.
 #[derive(Clone)]
+#[allow(dead_code)] // kind and started_at are recorded but not reported yet
 struct InstanceMeta {
     kind: WorkloadKind,
     name: ResourceName,
@@ -176,7 +179,9 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             let subject = Topic::Logs.for_node(&node_id.0);
             while let Some((id, stream, line)) = log_rx.recv().await {
-                let Some(meta) = instances.get(&id) else { continue };
+                let Some(meta) = instances.get(&id) else {
+                    continue;
+                };
                 let payload = LogLine {
                     node_id: node_id.clone(),
                     service: meta.name,
@@ -327,11 +332,7 @@ fn detect_os() -> OperatingSystem {
     }
 }
 
-fn build_inventory(
-    node_id: &NodeId,
-    sys: &System,
-    registry: &RuntimeRegistry,
-) -> NodeInventory {
+fn build_inventory(node_id: &NodeId, sys: &System, registry: &RuntimeRegistry) -> NodeInventory {
     let arch = detect_arch();
     let os = detect_os();
     let gpus = detect_gpus(arch, os, sys.total_memory());
@@ -361,7 +362,6 @@ fn detect_gpus(arch: Arch, os: OperatingSystem, total_memory_bytes: u64) -> Vec<
     match os {
         OperatingSystem::Macos => detect_gpus_macos(arch, total_memory_bytes),
         OperatingSystem::Linux => detect_gpus_linux(),
-        _ => Vec::new(),
     }
 }
 
@@ -381,12 +381,10 @@ fn detect_gpus_macos(arch: Arch, total_memory_bytes: u64) -> Vec<NodeGpu> {
     if let Ok(output) = std::process::Command::new("system_profiler")
         .args(["SPDisplaysDataType", "-json"])
         .output()
+        && output.status.success()
+        && let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
     {
-        if output.status.success() {
-            if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
-                return parse_macos_system_profiler(&parsed);
-            }
-        }
+        return parse_macos_system_profiler(&parsed);
     }
     Vec::new()
 }
@@ -404,10 +402,14 @@ pub(crate) fn parse_macos_system_profiler(v: &serde_json::Value) -> Vec<NodeGpu>
             .and_then(|s| s.as_str())
             .or_else(|| entry.get("_name").and_then(|s| s.as_str()));
         let vendor = match model.unwrap_or("").to_lowercase() {
-            ref s if s.contains("nvidia") || s.contains("geforce") || s.contains("quadro") => GpuVendor::Nvidia,
+            ref s if s.contains("nvidia") || s.contains("geforce") || s.contains("quadro") => {
+                GpuVendor::Nvidia
+            }
             ref s if s.contains("amd") || s.contains("radeon") => GpuVendor::Amd,
             ref s if s.contains("apple") => GpuVendor::Apple,
-            ref s if s.contains("intel") || s.contains("iris") || s.contains("uhd") => GpuVendor::Intel,
+            ref s if s.contains("intel") || s.contains("iris") || s.contains("uhd") => {
+                GpuVendor::Intel
+            }
             _ => continue,
         };
         // VRAM: explicit or shared. "sppci_vram_shared" is the inline-graphics
@@ -448,22 +450,24 @@ fn detect_gpus_linux() -> Vec<NodeGpu> {
     // NVIDIA first — `nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits`
     // emits one line per GPU: "NVIDIA GeForce RTX 4090, 24564"
     if let Ok(output) = std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
+        .args([
+            "--query-gpu=name,memory.total",
+            "--format=csv,noheader,nounits",
+        ])
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let parsed = parse_nvidia_smi(&String::from_utf8_lossy(&output.stdout));
-            if !parsed.is_empty() {
-                return parsed;
-            }
+        let parsed = parse_nvidia_smi(&String::from_utf8_lossy(&output.stdout));
+        if !parsed.is_empty() {
+            return parsed;
         }
     }
     // Fallback: lspci for any VGA / 3D controller. Doesn't report VRAM —
     // workloads that need vram_gb checks will need a node with the real path.
-    if let Ok(output) = std::process::Command::new("lspci").output() {
-        if output.status.success() {
-            return parse_lspci(&String::from_utf8_lossy(&output.stdout));
-        }
+    if let Ok(output) = std::process::Command::new("lspci").output()
+        && output.status.success()
+    {
+        return parse_lspci(&String::from_utf8_lossy(&output.stdout));
     }
     Vec::new()
 }
@@ -490,13 +494,19 @@ pub(crate) fn parse_nvidia_smi(stdout: &str) -> Vec<NodeGpu> {
 pub(crate) fn parse_lspci(stdout: &str) -> Vec<NodeGpu> {
     let mut gpus = Vec::new();
     for line in stdout.lines() {
-        if !line.contains("VGA") && !line.contains("3D controller") && !line.contains("Display controller") {
+        if !line.contains("VGA")
+            && !line.contains("3D controller")
+            && !line.contains("Display controller")
+        {
             continue;
         }
         let lower = line.to_lowercase();
         let vendor = if lower.contains("nvidia") {
             GpuVendor::Nvidia
-        } else if lower.contains("amd") || lower.contains("advanced micro devices") || lower.contains("radeon") {
+        } else if lower.contains("amd")
+            || lower.contains("advanced micro devices")
+            || lower.contains("radeon")
+        {
             // Avoid plain "ati" — it matches "VGA comp**ati**ble controller"
             // on every Intel / NVIDIA line.
             GpuVendor::Amd
@@ -507,7 +517,11 @@ pub(crate) fn parse_lspci(stdout: &str) -> Vec<NodeGpu> {
         };
         // Drop the leading "<bus>: VGA ..." then split on the next colon for the model.
         let model = line.split(':').nth(2).map(|s| s.trim().to_owned());
-        gpus.push(NodeGpu { vendor, vram_gb: 0, name: model });
+        gpus.push(NodeGpu {
+            vendor,
+            vram_gb: 0,
+            name: model,
+        });
     }
     gpus
 }
@@ -532,17 +546,17 @@ fn apple_silicon_marketing_name() -> String {
     if let Ok(output) = std::process::Command::new("sysctl")
         .args(["-n", "machdep.cpu.brand_string"])
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let s = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            if !s.is_empty() {
-                return s;
-            }
+        let s = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !s.is_empty() {
+            return s;
         }
     }
     "Apple Silicon".to_owned()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_control(
     subject: &str,
     payload: &[u8],
@@ -584,7 +598,11 @@ async fn dispatch_control(
         } else {
             (0..replicas).collect()
         };
-        let total_replicas = if partial_mode { replicas } else { slots.len() as u32 };
+        let total_replicas = if partial_mode {
+            replicas
+        } else {
+            slots.len() as u32
+        };
         for &idx in &slots {
             let id = if !partial_mode && idx == 0 {
                 spec.instance_id
@@ -652,11 +670,21 @@ async fn probe_loop(
     instances: Arc<InstanceRegistry>,
 ) {
     let (interval, threshold) = match &hc {
-        HealthCheck::Http { interval_seconds, failure_threshold, .. }
-        | HealthCheck::Tcp { interval_seconds, failure_threshold, .. }
-        | HealthCheck::Exec { interval_seconds, failure_threshold, .. } => {
-            (*interval_seconds as u64, *failure_threshold)
+        HealthCheck::Http {
+            interval_seconds,
+            failure_threshold,
+            ..
         }
+        | HealthCheck::Tcp {
+            interval_seconds,
+            failure_threshold,
+            ..
+        }
+        | HealthCheck::Exec {
+            interval_seconds,
+            failure_threshold,
+            ..
+        } => (*interval_seconds as u64, *failure_threshold),
     };
     let subject = Topic::ServiceHealth.as_str().to_owned();
     let mut ticker = tokio::time::interval(Duration::from_secs(interval.max(1)));
@@ -729,8 +757,7 @@ async fn run_probe(hc: &HealthCheck) -> Result<()> {
             cmd.stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());
-            let status =
-                tokio::time::timeout(Duration::from_secs(5), cmd.status()).await??;
+            let status = tokio::time::timeout(Duration::from_secs(5), cmd.status()).await??;
             if !status.success() {
                 anyhow::bail!("exec exit {status:?}");
             }
@@ -769,17 +796,14 @@ fn runtime_adapter_name(r: &orion_types::Runtime) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::routing::get;
     use axum::Router;
+    use axum::routing::get;
     use orion_types::HealthCheck;
     use tokio::net::TcpListener;
 
     // ----------------------------------------------------------- HTTP probes
 
-    async fn ephemeral_http_server<F>(handler: axum::routing::MethodRouter) -> u16
-    where
-        F: Send + 'static,
-    {
+    async fn ephemeral_http_server(handler: axum::routing::MethodRouter) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let app = Router::new().route("/health", handler);
@@ -791,7 +815,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_probe_succeeds_on_2xx() {
-        let port = ephemeral_http_server::<()>(get(|| async { "ok" })).await;
+        let port = ephemeral_http_server(get(|| async { "ok" })).await;
         // Loop probe needs 127.0.0.1; that's exactly where we bound.
         let hc = HealthCheck::Http {
             path: "/health".into(),
@@ -804,7 +828,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_probe_fails_on_5xx() {
-        let port = ephemeral_http_server::<()>(get(|| async {
+        let port = ephemeral_http_server(get(|| async {
             (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "boom")
         }))
         .await;
@@ -816,7 +840,10 @@ mod tests {
         };
         let err = run_probe(&hc).await.unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("500"), "expected 500 in error message, got: {msg}");
+        assert!(
+            msg.contains("500"),
+            "expected 500 in error message, got: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -907,7 +934,7 @@ mod tests {
         assert_eq!(parse_vram_to_gb("8192 MB"), Some(8));
         assert_eq!(parse_vram_to_gb("24 GB"), Some(24));
         assert_eq!(parse_vram_to_gb("1536 MB"), Some(2)); // 1.5 GB rounds up to 2
-        assert_eq!(parse_vram_to_gb("256 MB"), Some(1));  // sub-1GB clamps to 1
+        assert_eq!(parse_vram_to_gb("256 MB"), Some(1)); // sub-1GB clamps to 1
         assert_eq!(parse_vram_to_gb("not a number"), None);
         assert_eq!(parse_vram_to_gb(""), None);
     }
@@ -944,7 +971,11 @@ mod tests {
         assert_eq!(gpus[1].vendor, GpuVendor::Nvidia);
         assert_eq!(gpus[2].vendor, GpuVendor::Amd);
         // Unknown-vendor GPU is dropped, network controller is dropped.
-        assert!(!gpus.iter().any(|g| g.name.as_deref().unwrap_or("").contains("Realtek")));
+        assert!(
+            !gpus
+                .iter()
+                .any(|g| g.name.as_deref().unwrap_or("").contains("Realtek"))
+        );
     }
 
     #[test]
@@ -1001,7 +1032,11 @@ mod tests {
 
     #[test]
     fn primary_acceleration_picks_metal_for_apple_gpu() {
-        let gpus = vec![NodeGpu { vendor: GpuVendor::Apple, vram_gb: 8, name: None }];
+        let gpus = vec![NodeGpu {
+            vendor: GpuVendor::Apple,
+            vram_gb: 8,
+            name: None,
+        }];
         assert_eq!(
             primary_acceleration(&gpus, OperatingSystem::Macos),
             Some(Acceleration::Metal)
@@ -1010,7 +1045,11 @@ mod tests {
 
     #[test]
     fn primary_acceleration_picks_cuda_for_nvidia() {
-        let gpus = vec![NodeGpu { vendor: GpuVendor::Nvidia, vram_gb: 24, name: None }];
+        let gpus = vec![NodeGpu {
+            vendor: GpuVendor::Nvidia,
+            vram_gb: 24,
+            name: None,
+        }];
         assert_eq!(
             primary_acceleration(&gpus, OperatingSystem::Linux),
             Some(Acceleration::Cuda)
@@ -1019,7 +1058,11 @@ mod tests {
 
     #[test]
     fn primary_acceleration_picks_rocm_for_amd() {
-        let gpus = vec![NodeGpu { vendor: GpuVendor::Amd, vram_gb: 16, name: None }];
+        let gpus = vec![NodeGpu {
+            vendor: GpuVendor::Amd,
+            vram_gb: 16,
+            name: None,
+        }];
         assert_eq!(
             primary_acceleration(&gpus, OperatingSystem::Linux),
             Some(Acceleration::Rocm)
@@ -1029,7 +1072,11 @@ mod tests {
     #[test]
     fn primary_acceleration_picks_coreml_on_macos_intel() {
         // Intel iGPU on macOS, no Apple GPU
-        let gpus = vec![NodeGpu { vendor: GpuVendor::Intel, vram_gb: 1, name: None }];
+        let gpus = vec![NodeGpu {
+            vendor: GpuVendor::Intel,
+            vram_gb: 1,
+            name: None,
+        }];
         assert_eq!(
             primary_acceleration(&gpus, OperatingSystem::Macos),
             Some(Acceleration::Coreml)
@@ -1053,7 +1100,11 @@ mod tests {
         } else {
             (0..replicas).collect()
         };
-        let total = if partial_mode { replicas } else { slots.len() as u32 };
+        let total = if partial_mode {
+            replicas
+        } else {
+            slots.len() as u32
+        };
         (slots, total)
     }
 

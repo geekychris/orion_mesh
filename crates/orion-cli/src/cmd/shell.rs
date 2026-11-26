@@ -4,11 +4,10 @@
 //!
 //! * `completions` — emit bash/zsh/fish/elvish completions.
 //! * `env`         — emit shell-eval'able `KEY=value` lines so a script
-//!                   can pick up `ORION_CONTROLLER_URL` etc. without
-//!                   remembering them.
+//!   can pick up `ORION_CONTROLLER_URL` etc. without remembering them.
 //! * `exec`        — wrap an arbitrary shell command as a one-shot Task,
-//!                   dispatch it, stream logs back. The "I want to run
-//!                   `python my-script.py` somewhere on the cluster" verb.
+//!   dispatch it, stream logs back. The "I want to run
+//!   `python my-script.py` somewhere on the cluster" verb.
 
 use crate::Ctx;
 use anyhow::{Context, Result};
@@ -161,10 +160,8 @@ pub async fn run_exec(ctx: &Ctx, args: ExecArgs) -> Result<()> {
     match args.runtime.as_str() {
         "native" => {
             runtime.insert("exec".into(), args.argv[0].as_str().into());
-            let rest: Vec<serde_yaml_ng::Value> = args.argv[1..]
-                .iter()
-                .map(|s| s.as_str().into())
-                .collect();
+            let rest: Vec<serde_yaml_ng::Value> =
+                args.argv[1..].iter().map(|s| s.as_str().into()).collect();
             runtime.insert("args".into(), rest.into());
         }
         "docker" => {
@@ -236,7 +233,10 @@ mod tests {
     #[test]
     fn shell_quote_passes_safe_strings_through() {
         assert_eq!(shell_quote("simple"), "simple");
-        assert_eq!(shell_quote("http://127.0.0.1:7878"), "http://127.0.0.1:7878");
+        assert_eq!(
+            shell_quote("http://127.0.0.1:7878"),
+            "http://127.0.0.1:7878"
+        );
         assert_eq!(shell_quote("a-b_c.d/e:f@g"), "a-b_c.d/e:f@g");
     }
 

@@ -66,8 +66,14 @@ fn per_node_subjects_substitute_node_id() {
     assert_eq!(Topic::Metrics.for_node("pi5"), "orion.metrics.pi5");
     assert_eq!(Topic::ControlRun.for_node("pi5"), "orion.control.pi5.run");
     assert_eq!(Topic::ControlStop.for_node("pi5"), "orion.control.pi5.stop");
-    assert_eq!(Topic::ControlRestart.for_node("pi5"), "orion.control.pi5.restart");
-    assert_eq!(Topic::ControlDrain.for_node("pi5"), "orion.control.pi5.drain");
+    assert_eq!(
+        Topic::ControlRestart.for_node("pi5"),
+        "orion.control.pi5.restart"
+    );
+    assert_eq!(
+        Topic::ControlDrain.for_node("pi5"),
+        "orion.control.pi5.drain"
+    );
 }
 
 #[test]
@@ -285,15 +291,18 @@ fn control_messages_roundtrip() {
 
 #[test]
 fn envelope_carries_source_and_time() {
-    let env = Envelope::new(Some(nid()), Heartbeat {
-        node_id: nid(),
-        agent_version: "0.1.0".into(),
-        uptime_seconds: 0,
-        cpu_load_1m: 0.0,
-        mem_used_bytes: 0,
-        mem_total_bytes: 0,
-        labels: Default::default(),
-    });
+    let env = Envelope::new(
+        Some(nid()),
+        Heartbeat {
+            node_id: nid(),
+            agent_version: "0.1.0".into(),
+            uptime_seconds: 0,
+            cpu_load_1m: 0.0,
+            mem_used_bytes: 0,
+            mem_total_bytes: 0,
+            labels: Default::default(),
+        },
+    );
     assert!(env.at <= Utc::now());
     assert_eq!(env.source, Some(nid()));
     assert_eq!(env.protocol, PROTOCOL_VERSION);

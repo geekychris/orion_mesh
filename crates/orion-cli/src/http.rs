@@ -2,20 +2,19 @@
 
 use crate::Ctx;
 use anyhow::{Context, Result};
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 fn build(ctx: &Ctx) -> Result<reqwest::Client> {
     let mut headers = HeaderMap::new();
-    if let Some(t) = &ctx.token {
-        if !t.is_empty() {
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {t}"))
-                    .context("invalid token characters")?,
-            );
-        }
+    if let Some(t) = &ctx.token
+        && !t.is_empty()
+    {
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {t}")).context("invalid token characters")?,
+        );
     }
     Ok(reqwest::Client::builder()
         .default_headers(headers)

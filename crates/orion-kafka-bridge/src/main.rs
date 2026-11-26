@@ -16,11 +16,11 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use futures::StreamExt;
-use orion_kafka_bridge::{make_inbound, make_outbound, Direction};
+use orion_kafka_bridge::{Direction, make_inbound, make_outbound};
+use rdkafka::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::producer::{FutureProducer, FutureRecord};
-use rdkafka::Message;
 use std::time::Duration;
 
 #[derive(Parser, Debug)]

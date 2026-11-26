@@ -10,14 +10,14 @@ use clap::Args as ClapArgs;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs};
-use ratatui::Terminal;
 use serde_json::Value;
 use std::io::stdout;
 use std::time::{Duration, Instant};
@@ -29,11 +29,10 @@ pub struct Args {
 }
 
 #[derive(Default, Clone)]
-struct Snapshot {
+pub(crate) struct Snapshot {
     nodes: Value,
     services: Value,
     queues: Value,
-    instances: Value,
     diag_system: Value,
     last_refresh: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -99,37 +98,43 @@ async fn run_loop(
             last_fetch = Instant::now();
         }
         terminal.draw(|f| draw(f, &snap, tab))?;
-        if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(k) = event::read()? {
-                match k.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Char('r') => {
-                        last_fetch = Instant::now() - Duration::from_secs(args.refresh_seconds + 1)
-                    }
-                    KeyCode::Right | KeyCode::Tab => tab = tab.next(),
-                    KeyCode::Left | KeyCode::BackTab => tab = tab.prev(),
-                    KeyCode::Char('1') => tab = Tab::Overview,
-                    KeyCode::Char('2') => tab = Tab::Nodes,
-                    KeyCode::Char('3') => tab = Tab::Services,
-                    KeyCode::Char('4') => tab = Tab::Queues,
-                    _ => {}
+        if event::poll(Duration::from_millis(200))?
+            && let Event::Key(k) = event::read()?
+        {
+            match k.code {
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                KeyCode::Char('r') => {
+                    last_fetch = Instant::now() - Duration::from_secs(args.refresh_seconds + 1)
                 }
+                KeyCode::Right | KeyCode::Tab => tab = tab.next(),
+                KeyCode::Left | KeyCode::BackTab => tab = tab.prev(),
+                KeyCode::Char('1') => tab = Tab::Overview,
+                KeyCode::Char('2') => tab = Tab::Nodes,
+                KeyCode::Char('3') => tab = Tab::Services,
+                KeyCode::Char('4') => tab = Tab::Queues,
+                _ => {}
             }
         }
     }
 }
 
 async fn fetch(ctx: &Ctx) -> Snapshot {
-    let nodes = http::get_json::<Value>(ctx, "/v1/nodes").await.unwrap_or(Value::Null);
-    let services = http::get_json::<Value>(ctx, "/v1/resources/Service").await.unwrap_or(Value::Null);
-    let queues = http::get_json::<Value>(ctx, "/v1/resources/Queue").await.unwrap_or(Value::Null);
-    let instances = http::get_json::<Value>(ctx, "/v1/instances").await.unwrap_or(Value::Null);
-    let diag_system = http::get_json::<Value>(ctx, "/v1/diag/system").await.unwrap_or(Value::Null);
+    let nodes = http::get_json::<Value>(ctx, "/v1/nodes")
+        .await
+        .unwrap_or(Value::Null);
+    let services = http::get_json::<Value>(ctx, "/v1/resources/Service")
+        .await
+        .unwrap_or(Value::Null);
+    let queues = http::get_json::<Value>(ctx, "/v1/resources/Queue")
+        .await
+        .unwrap_or(Value::Null);
+    let diag_system = http::get_json::<Value>(ctx, "/v1/diag/system")
+        .await
+        .unwrap_or(Value::Null);
     Snapshot {
         nodes,
         services,
         queues,
-        instances,
         diag_system,
         last_refresh: Some(chrono::Utc::now()),
     }
@@ -158,7 +163,11 @@ fn draw(f: &mut ratatui::Frame, snap: &Snapshot, tab: Tab) {
     let tabs_widget = Tabs::new(tab_titles)
         .block(Block::default().borders(Borders::BOTTOM).title("OrionMesh"))
         .select(active)
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan));
+        .highlight_style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
+        );
     f.render_widget(tabs_widget, chunks[0]);
 
     match tab {
@@ -185,7 +194,10 @@ fn draw_overview(f: &mut ratatui::Frame, area: Rect, snap: &Snapshot) {
     let text = vec![
         Line::from(vec![
             Span::styled("agents:    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(summary.agents.to_string(), Style::default().fg(Color::Green)),
+            Span::styled(
+                summary.agents.to_string(),
+                Style::default().fg(Color::Green),
+            ),
         ]),
         Line::from(vec![
             Span::styled("services:  ", Style::default().fg(Color::DarkGray)),
@@ -222,10 +234,22 @@ pub(crate) fn node_rows(nodes: &Value) -> Vec<[String; 4]> {
             arr.iter()
                 .map(|n| {
                     [
-                        n.get("node_id").and_then(|s| s.as_str()).unwrap_or("?").to_owned(),
-                        n.pointer("/inventory/arch").and_then(|s| s.as_str()).unwrap_or("-").to_owned(),
-                        n.pointer("/inventory/os").and_then(|s| s.as_str()).unwrap_or("-").to_owned(),
-                        n.get("last_seen_at").and_then(|s| s.as_str()).unwrap_or("-").to_owned(),
+                        n.get("node_id")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("?")
+                            .to_owned(),
+                        n.pointer("/inventory/arch")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("-")
+                            .to_owned(),
+                        n.pointer("/inventory/os")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("-")
+                            .to_owned(),
+                        n.get("last_seen_at")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("-")
+                            .to_owned(),
                     ]
                 })
                 .collect()
@@ -241,10 +265,21 @@ pub(crate) fn service_rows(services: &Value) -> Vec<[String; 4]> {
             arr.iter()
                 .map(|s| {
                     [
-                        s.pointer("/metadata/name").and_then(|s| s.as_str()).unwrap_or("?").to_owned(),
-                        s.pointer("/spec/replicas").map(|v| v.to_string()).unwrap_or_else(|| "1".into()),
-                        s.pointer("/spec/runtime/kind").and_then(|s| s.as_str()).unwrap_or("?").to_owned(),
-                        s.pointer("/spec/restart_policy").and_then(|s| s.as_str()).unwrap_or("?").to_owned(),
+                        s.pointer("/metadata/name")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("?")
+                            .to_owned(),
+                        s.pointer("/spec/replicas")
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "1".into()),
+                        s.pointer("/spec/runtime/kind")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("?")
+                            .to_owned(),
+                        s.pointer("/spec/restart_policy")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("?")
+                            .to_owned(),
                     ]
                 })
                 .collect()
@@ -260,9 +295,17 @@ pub(crate) fn queue_rows(queues: &Value) -> Vec<[String; 3]> {
             arr.iter()
                 .map(|q| {
                     [
-                        q.pointer("/metadata/name").and_then(|s| s.as_str()).unwrap_or("?").to_owned(),
-                        q.pointer("/spec/type").and_then(|s| s.as_str()).unwrap_or("work").to_owned(),
-                        q.pointer("/spec/max_age_seconds").map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+                        q.pointer("/metadata/name")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("?")
+                            .to_owned(),
+                        q.pointer("/spec/type")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("work")
+                            .to_owned(),
+                        q.pointer("/spec/max_age_seconds")
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "-".into()),
                     ]
                 })
                 .collect()
@@ -316,7 +359,10 @@ fn draw_nodes(f: &mut ratatui::Frame, area: Rect, snap: &Snapshot) {
         Constraint::Min(20),
     ];
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["NODE", "ARCH", "OS", "LAST SEEN"]).style(Style::default().add_modifier(Modifier::BOLD)))
+        .header(
+            Row::new(vec!["NODE", "ARCH", "OS", "LAST SEEN"])
+                .style(Style::default().add_modifier(Modifier::BOLD)),
+        )
         .block(Block::default().borders(Borders::ALL).title("Nodes"));
     f.render_widget(table, area);
 }
@@ -333,7 +379,10 @@ fn draw_services(f: &mut ratatui::Frame, area: Rect, snap: &Snapshot) {
         Constraint::Length(15),
     ];
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["NAME", "REPLICAS", "RUNTIME", "RESTART"]).style(Style::default().add_modifier(Modifier::BOLD)))
+        .header(
+            Row::new(vec!["NAME", "REPLICAS", "RUNTIME", "RESTART"])
+                .style(Style::default().add_modifier(Modifier::BOLD)),
+        )
         .block(Block::default().borders(Borders::ALL).title("Services"));
     f.render_widget(table, area);
 }
@@ -349,7 +398,10 @@ fn draw_queues(f: &mut ratatui::Frame, area: Rect, snap: &Snapshot) {
         Constraint::Length(15),
     ];
     let table = Table::new(rows, widths)
-        .header(Row::new(vec!["NAME", "TYPE", "MAX_AGE"]).style(Style::default().add_modifier(Modifier::BOLD)))
+        .header(
+            Row::new(vec!["NAME", "TYPE", "MAX_AGE"])
+                .style(Style::default().add_modifier(Modifier::BOLD)),
+        )
         .block(Block::default().borders(Borders::ALL).title("Queues"));
     f.render_widget(table, area);
 }
@@ -364,7 +416,6 @@ mod tests {
             nodes,
             services,
             queues,
-            instances: Value::Null,
             diag_system: diag,
             last_refresh: None,
         }
@@ -378,7 +429,15 @@ mod tests {
         ]);
         let rows = node_rows(&nodes);
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], ["pi".to_string(), "arm64".into(), "linux".into(), "2026-06-30T01:23:45Z".into()]);
+        assert_eq!(
+            rows[0],
+            [
+                "pi".to_string(),
+                "arm64".into(),
+                "linux".into(),
+                "2026-06-30T01:23:45Z".into()
+            ]
+        );
         assert_eq!(rows[1][0], "mac");
         assert_eq!(rows[1][2], "macos");
     }
@@ -388,7 +447,10 @@ mod tests {
         let nodes = json!([{ "node_id": "x" }]);
         let rows = node_rows(&nodes);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0], ["x".to_string(), "-".into(), "-".into(), "-".into()]);
+        assert_eq!(
+            rows[0],
+            ["x".to_string(), "-".into(), "-".into(), "-".into()]
+        );
     }
 
     #[test]
@@ -434,7 +496,10 @@ mod tests {
         ]);
         let rows = queue_rows(&queues);
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], ["ps-rows".to_string(), "work".into(), "3600".into()]);
+        assert_eq!(
+            rows[0],
+            ["ps-rows".to_string(), "work".into(), "3600".into()]
+        );
         // Default to "work" when type is missing.
         assert_eq!(rows[1][1], "work");
         // max_age_seconds missing → "-"

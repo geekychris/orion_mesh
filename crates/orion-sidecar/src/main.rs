@@ -4,13 +4,14 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use orion_sidecar::{compile_filter, line_matches, SidecarEvent};
+use orion_sidecar::{SidecarEvent, compile_filter, line_matches};
 use serde::Deserialize;
 use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 struct LogArchiveEntry {
     at: DateTime<Utc>,
+    #[allow(dead_code)] // part of the archive line format
     kind: String,
     name: String,
     node_id: String,
@@ -30,13 +31,12 @@ async fn main() -> Result<()> {
     let controller =
         std::env::var("ORION_CONTROLLER_URL").unwrap_or_else(|_| "http://127.0.0.1:7878".into());
     let token = std::env::var("ORION_CLUSTER_TOKEN").ok();
-    let source = std::env::var("SIDECAR_SOURCE_SERVICE")
-        .context("SIDECAR_SOURCE_SERVICE must be set")?;
+    let source =
+        std::env::var("SIDECAR_SOURCE_SERVICE").context("SIDECAR_SOURCE_SERVICE must be set")?;
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
-    let subject = std::env::var("ORION_QUEUE_SUBJECT")
-        .context("ORION_QUEUE_SUBJECT must be set")?;
-    let stream = std::env::var("ORION_QUEUE_STREAM")
-        .context("ORION_QUEUE_STREAM must be set")?;
+    let subject =
+        std::env::var("ORION_QUEUE_SUBJECT").context("ORION_QUEUE_SUBJECT must be set")?;
+    let stream = std::env::var("ORION_QUEUE_STREAM").context("ORION_QUEUE_STREAM must be set")?;
     let interval = std::env::var("SIDECAR_INTERVAL_SECONDS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())

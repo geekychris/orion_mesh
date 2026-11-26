@@ -67,7 +67,11 @@ impl DevPortalClient {
 
     pub async fn list_peer_runtimes(&self) -> Result<Vec<PeerRuntimeRecord>, DevPortalError> {
         let base = self.base.as_deref().ok_or(DevPortalError::NotConfigured)?;
-        let res = self.http.get(format!("{base}/api/peer-runtimes")).send().await?;
+        let res = self
+            .http
+            .get(format!("{base}/api/peer-runtimes"))
+            .send()
+            .await?;
         let status = res.status();
         if !status.is_success() {
             let text = res.text().await.unwrap_or_default();

@@ -33,7 +33,11 @@ async fn upsert_then_get_round_trips_resource() {
     let r = svc("amiga-search");
     let gen1 = s.upsert_resource(&r).await.unwrap();
     assert_eq!(gen1, 1);
-    let fetched = s.get_resource("Service", "_", "amiga-search").await.unwrap().unwrap();
+    let fetched = s
+        .get_resource("Service", "_", "amiga-search")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(fetched.kind_str(), "Service");
     assert_eq!(fetched.name(), "amiga-search");
 }
@@ -98,7 +102,12 @@ async fn delete_removes_and_reports_existence() {
     s.upsert_resource(&svc("doomed")).await.unwrap();
     assert!(s.delete_resource("Service", "_", "doomed").await.unwrap());
     assert!(!s.delete_resource("Service", "_", "doomed").await.unwrap());
-    assert!(s.get_resource("Service", "_", "doomed").await.unwrap().is_none());
+    assert!(
+        s.get_resource("Service", "_", "doomed")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -110,9 +119,14 @@ async fn node_touch_and_inventory_round_trip() {
     assert_eq!(nodes[0].node_id, "pi5");
     assert!(nodes[0].inventory_json.is_none());
 
-    s.set_node_inventory("pi5", "0.1.0", r#"{"node_id":"pi5"}"#).await.unwrap();
+    s.set_node_inventory("pi5", "0.1.0", r#"{"node_id":"pi5"}"#)
+        .await
+        .unwrap();
     let nodes = s.list_nodes().await.unwrap();
-    assert_eq!(nodes[0].inventory_json.as_deref(), Some(r#"{"node_id":"pi5"}"#));
+    assert_eq!(
+        nodes[0].inventory_json.as_deref(),
+        Some(r#"{"node_id":"pi5"}"#)
+    );
 }
 
 // ============================================================ log archive
@@ -121,11 +135,20 @@ async fn node_touch_and_inventory_round_trip() {
 async fn log_archive_append_and_read_basic() {
     let s = store().await;
     for i in 0..5 {
-        s.append_log("Service", "row-cruncher", "node-a", "stdout", &format!("line {i}"))
-            .await
-            .unwrap();
+        s.append_log(
+            "Service",
+            "row-cruncher",
+            "node-a",
+            "stdout",
+            &format!("line {i}"),
+        )
+        .await
+        .unwrap();
     }
-    let entries = s.read_logs("Service", "row-cruncher", None, 100).await.unwrap();
+    let entries = s
+        .read_logs("Service", "row-cruncher", None, 100)
+        .await
+        .unwrap();
     assert_eq!(entries.len(), 5);
     // Newest first.
     assert!(entries[0].line.contains("line 4"));
@@ -137,9 +160,15 @@ async fn log_archive_append_and_read_basic() {
 #[tokio::test]
 async fn log_archive_kind_and_name_filter() {
     let s = store().await;
-    s.append_log("Service", "a", "n", "stdout", "in-a").await.unwrap();
-    s.append_log("Service", "b", "n", "stdout", "in-b").await.unwrap();
-    s.append_log("Task", "a", "n", "stdout", "task-a").await.unwrap();
+    s.append_log("Service", "a", "n", "stdout", "in-a")
+        .await
+        .unwrap();
+    s.append_log("Service", "b", "n", "stdout", "in-b")
+        .await
+        .unwrap();
+    s.append_log("Task", "a", "n", "stdout", "task-a")
+        .await
+        .unwrap();
 
     let a_only = s.read_logs("Service", "a", None, 100).await.unwrap();
     assert_eq!(a_only.len(), 1);
@@ -153,15 +182,24 @@ async fn log_archive_kind_and_name_filter() {
 #[tokio::test]
 async fn log_archive_since_returns_only_newer_entries() {
     let s = store().await;
-    s.append_log("Service", "svc", "n", "stdout", "first").await.unwrap();
+    s.append_log("Service", "svc", "n", "stdout", "first")
+        .await
+        .unwrap();
     // Give the clock a beat — RFC3339 has subsec precision but identical
     // timestamps could compare equal under a fast loop. 50ms is plenty.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let cutoff = chrono::Utc::now();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    s.append_log("Service", "svc", "n", "stdout", "second").await.unwrap();
-    s.append_log("Service", "svc", "n", "stdout", "third").await.unwrap();
-    let after = s.read_logs("Service", "svc", Some(cutoff), 100).await.unwrap();
+    s.append_log("Service", "svc", "n", "stdout", "second")
+        .await
+        .unwrap();
+    s.append_log("Service", "svc", "n", "stdout", "third")
+        .await
+        .unwrap();
+    let after = s
+        .read_logs("Service", "svc", Some(cutoff), 100)
+        .await
+        .unwrap();
     assert_eq!(after.len(), 2);
     let lines: Vec<_> = after.iter().map(|e| e.line.as_str()).collect();
     assert!(lines.contains(&"second"));
@@ -173,7 +211,9 @@ async fn log_archive_since_returns_only_newer_entries() {
 async fn log_archive_limit_bounds_returned_rows() {
     let s = store().await;
     for i in 0..20 {
-        s.append_log("Service", "svc", "n", "stdout", &format!("l{i}")).await.unwrap();
+        s.append_log("Service", "svc", "n", "stdout", &format!("l{i}"))
+            .await
+            .unwrap();
     }
     let only_3 = s.read_logs("Service", "svc", None, 3).await.unwrap();
     assert_eq!(only_3.len(), 3);
@@ -185,7 +225,9 @@ async fn log_archive_limit_bounds_returned_rows() {
 #[tokio::test]
 async fn log_archive_purge_drops_old_rows() {
     let s = store().await;
-    s.append_log("Service", "svc", "n", "stdout", "fresh").await.unwrap();
+    s.append_log("Service", "svc", "n", "stdout", "fresh")
+        .await
+        .unwrap();
     // purge_old_logs(0) cuts at "right now" — anything strictly older goes.
     // We just inserted a row at ~now, so it should survive (at >= cutoff).
     // Inject a row with a far-past at directly via SQL to test the cutoff.

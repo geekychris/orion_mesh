@@ -13,10 +13,7 @@ pub struct Args {
 pub async fn run(ctx: &Ctx, args: Args) -> Result<()> {
     let kind = super::util::canonical_kind(&args.kind);
     let resp = http::post_empty(ctx, &format!("/v1/dispatch/{kind}/{}", args.name)).await?;
-    let node = resp
-        .get("node")
-        .and_then(|s| s.as_str())
-        .unwrap_or("?");
+    let node = resp.get("node").and_then(|s| s.as_str()).unwrap_or("?");
     let id = resp
         .get("instance_id")
         .and_then(|s| s.as_str())

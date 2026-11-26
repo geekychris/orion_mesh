@@ -31,7 +31,9 @@ pub struct DockerAdapter {
 
 impl DockerAdapter {
     pub fn new() -> Self {
-        Self { containers: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            containers: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 }
 
@@ -61,7 +63,12 @@ impl RuntimeAdapter for DockerAdapter {
 
     async fn launch(&self, spec: LaunchSpec) -> Result<LaunchedInstance, RuntimeError> {
         let (image, args, env, ports) = match spec.runtime {
-            Runtime::Docker { image, args, env, ports } => (image, args, env, ports),
+            Runtime::Docker {
+                image,
+                args,
+                env,
+                ports,
+            } => (image, args, env, ports),
             other => {
                 return Err(RuntimeError::Mismatch {
                     adapter: "docker".into(),
@@ -135,13 +142,13 @@ impl RuntimeAdapter for DockerAdapter {
             let instance_id = spec.instance_id;
             let containers = self.containers.clone();
             tokio::spawn(async move {
-                let output = Command::new("docker")
-                    .args(["wait", &id])
-                    .output()
-                    .await;
+                let output = Command::new("docker").args(["wait", &id]).output().await;
                 let notice = match output {
                     Ok(o) if o.status.success() => {
-                        let code = String::from_utf8_lossy(&o.stdout).trim().parse::<i32>().ok();
+                        let code = String::from_utf8_lossy(&o.stdout)
+                            .trim()
+                            .parse::<i32>()
+                            .ok();
                         ExitNotice {
                             instance_id,
                             exit_code: code,
@@ -213,23 +220,14 @@ fn kind_str(r: &Runtime) -> &'static str {
     }
 }
 
-async fn forward_lines<R>(
-    id: Uuid,
-    stream: OutStream,
-    reader: R,
-    sink: crate::LogSink,
-) where
+async fn forward_lines<R>(id: Uuid, stream: OutStream, reader: R, sink: crate::LogSink)
+where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     let mut lines = BufReader::new(reader).lines();
-    loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
-                if sink.send((id, stream, line)).is_err() {
-                    break;
-                }
-            }
-            Ok(None) | Err(_) => break,
+    while let Ok(Some(line)) = lines.next_line().await {
+        if sink.send((id, stream, line)).is_err() {
+            break;
         }
     }
 }

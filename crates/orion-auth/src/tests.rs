@@ -100,7 +100,10 @@ fn missing_token_is_an_error_when_required() {
     let dir = tempfile::tempdir().unwrap();
     let env = EnvScope::new(&[ENV_DISABLED, ENV_TOKEN, "ORION_TOKEN_FILE"]);
     // Point the loader at a path that doesn't exist.
-    env.set("ORION_TOKEN_FILE", dir.path().join("nope.token").to_str().unwrap());
+    env.set(
+        "ORION_TOKEN_FILE",
+        dir.path().join("nope.token").to_str().unwrap(),
+    );
     let err = AuthMode::from_env().unwrap_err();
     assert!(matches!(err, AuthError::MissingToken));
 }
@@ -122,11 +125,11 @@ fn empty_token_file_is_missing() {
 mod middleware {
     use super::super::*;
     use axum::{
+        Router,
         body::Body,
         http::{Request, StatusCode, header},
         middleware::from_fn_with_state,
         routing::get,
-        Router,
     };
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -134,7 +137,10 @@ mod middleware {
     fn router(mode: AuthMode) -> Router {
         Router::new()
             .route("/v1/ping", get(|| async { "pong" }))
-            .layer(from_fn_with_state(mode.clone(), crate::http::require_bearer))
+            .layer(from_fn_with_state(
+                mode.clone(),
+                crate::http::require_bearer,
+            ))
             .with_state(mode)
     }
 
@@ -143,7 +149,10 @@ mod middleware {
         if let Some(h) = header {
             req = req.header(header::AUTHORIZATION, h);
         }
-        let resp = router.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+        let resp = router
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         let status = resp.status();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         (status, String::from_utf8(bytes.to_vec()).unwrap())

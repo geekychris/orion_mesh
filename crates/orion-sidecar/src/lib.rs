@@ -7,7 +7,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SidecarEvent {
     pub source_service: String,
-    pub stream: String,   // "stdout" / "stderr"
+    pub stream: String, // "stdout" / "stderr"
     pub at: String,
     pub line: String,
     pub node_id: String,
@@ -40,7 +40,10 @@ mod tests {
     #[test]
     fn line_matches_regex_filter() {
         let r = compile_filter("ERROR|WARN").unwrap();
-        assert!(line_matches(Some(&r), "[2026-06-30] WARN something happened"));
+        assert!(line_matches(
+            Some(&r),
+            "[2026-06-30] WARN something happened"
+        ));
         assert!(line_matches(Some(&r), "ERROR: boom"));
         assert!(!line_matches(Some(&r), "INFO chatty noise"));
     }

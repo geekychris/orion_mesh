@@ -97,8 +97,8 @@ async fn subscribe(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn scrape_publishes_parsed_samples_to_queue() {
-    use axum::routing::get;
     use axum::Router;
+    use axum::routing::get;
 
     let nats_store = tempfile::tempdir().unwrap();
     let nats = start_nats(SCRAPE_NATS_PORT, nats_store.path());
@@ -135,10 +135,7 @@ orion_test_gauge{quality=\"basic\"} 12
             format!("http://127.0.0.1:{SCRAPE_METRICS_PORT}/metrics"),
         )
         .env("SCRAPE_INTERVAL_SECONDS", "1")
-        .env(
-            "NATS_URL",
-            format!("nats://127.0.0.1:{SCRAPE_NATS_PORT}"),
-        )
+        .env("NATS_URL", format!("nats://127.0.0.1:{SCRAPE_NATS_PORT}"))
         .env("ORION_QUEUE_SUBJECT", SCRAPE_SUBJECT)
         .env("ORION_QUEUE_STREAM", SCRAPE_STREAM)
         .env("RUST_LOG", "warn")
@@ -174,8 +171,14 @@ orion_test_gauge{quality=\"basic\"} 12
         .iter()
         .map(|r| r["name"].as_str().unwrap())
         .collect();
-    assert!(names.contains("orion_test_counter"), "missing counter: {names:?}");
-    assert!(names.contains("orion_test_gauge"), "missing gauge: {names:?}");
+    assert!(
+        names.contains("orion_test_counter"),
+        "missing counter: {names:?}"
+    );
+    assert!(
+        names.contains("orion_test_gauge"),
+        "missing gauge: {names:?}"
+    );
     // Source URL preserved.
     for r in &received {
         let src = r["source"].as_str().unwrap();
@@ -211,10 +214,7 @@ async fn alertmanager_publishes_each_alert_to_queue() {
     let binary = Command::new(bin)
         .args(["--mode", "alertmanager"])
         .env("BIND", format!("127.0.0.1:{ALERT_BIND_PORT}"))
-        .env(
-            "NATS_URL",
-            format!("nats://127.0.0.1:{ALERT_NATS_PORT}"),
-        )
+        .env("NATS_URL", format!("nats://127.0.0.1:{ALERT_NATS_PORT}"))
         .env("ORION_QUEUE_SUBJECT", ALERT_SUBJECT)
         .env("ORION_QUEUE_STREAM", ALERT_STREAM)
         .env("RUST_LOG", "warn")

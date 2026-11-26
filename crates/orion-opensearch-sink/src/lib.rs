@@ -69,7 +69,10 @@ mod tests {
     fn body_serialises_doc_fields() {
         let body = build_bulk_body("orion-logs", &[doc("important")]);
         for field in ["at", "kind", "name", "node_id", "stream", "line"] {
-            assert!(body.contains(&format!("\"{field}\":")), "missing {field} in {body}");
+            assert!(
+                body.contains(&format!("\"{field}\":")),
+                "missing {field} in {body}"
+            );
         }
     }
 }

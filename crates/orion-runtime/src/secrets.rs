@@ -86,7 +86,9 @@ mod tests {
     #[tokio::test]
     async fn resolves_existing_file() {
         let dir = tempdir();
-        tokio::fs::write(dir.path().join("api-key"), b"hunter2").await.unwrap();
+        tokio::fs::write(dir.path().join("api-key"), b"hunter2")
+            .await
+            .unwrap();
         let r = PlaintextResolver::new(dir.path());
         let v = r.resolve("plaintext://api-key").await.unwrap();
         assert_eq!(v, b"hunter2");

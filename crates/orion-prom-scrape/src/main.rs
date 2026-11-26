@@ -10,14 +10,14 @@
 
 use anyhow::{Context, Result};
 use axum::{
+    Json, Router,
     extract::State,
     http::StatusCode,
     routing::{get, post},
-    Json, Router,
 };
 use chrono::Utc;
 use clap::Parser;
-use orion_prom_scrape::{parse_scrape, AlertmanagerPayload, ScrapedSample};
+use orion_prom_scrape::{AlertmanagerPayload, ScrapedSample, parse_scrape};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -119,35 +119,34 @@ struct AlertState {
 
 async fn run_alertmanager(js: async_nats::jetstream::Context, subject: String) -> Result<()> {
     let bind = std::env::var("BIND").unwrap_or_else(|_| "0.0.0.0:9090".into());
-    let app = Router::new()
-        .route("/health", get(|| async { "ok" }))
-        .route(
-            "/alerts",
-            post(
-                |State(state): State<Arc<AlertState>>, Json(payload): Json<AlertmanagerPayload>| async move {
-                    for alert in payload.alerts {
-                        let body = json!({
-                            "receiver": payload.receiver,
-                            "status": payload.status,
-                            "alert_status": alert.status,
-                            "labels": alert.labels,
-                            "annotations": alert.annotations,
-                            "starts_at": alert.starts_at,
-                            "at": Utc::now().to_rfc3339(),
-                            "_subject": state.subject,
-                        });
-                        if let Ok(bytes) = serde_json::to_vec(&body) {
-                            let _ = state
-                                .js
-                                .publish(state.subject.clone(), bytes.into())
-                                .await;
+    let app =
+        Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .route(
+                "/alerts",
+                post(
+                    |State(state): State<Arc<AlertState>>,
+                     Json(payload): Json<AlertmanagerPayload>| async move {
+                        for alert in payload.alerts {
+                            let body = json!({
+                                "receiver": payload.receiver,
+                                "status": payload.status,
+                                "alert_status": alert.status,
+                                "labels": alert.labels,
+                                "annotations": alert.annotations,
+                                "starts_at": alert.starts_at,
+                                "at": Utc::now().to_rfc3339(),
+                                "_subject": state.subject,
+                            });
+                            if let Ok(bytes) = serde_json::to_vec(&body) {
+                                let _ = state.js.publish(state.subject.clone(), bytes.into()).await;
+                            }
                         }
-                    }
-                    StatusCode::OK
-                },
-            ),
-        )
-        .with_state(Arc::new(AlertState { js, subject }));
+                        StatusCode::OK
+                    },
+                ),
+            )
+            .with_state(Arc::new(AlertState { js, subject }));
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(bind = %bind, "orion-prom-scrape (alertmanager) listening");
     axum::serve(listener, app).await?;

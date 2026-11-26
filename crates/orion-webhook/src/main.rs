@@ -12,16 +12,16 @@
 
 use anyhow::{Context, Result};
 use axum::{
+    Router,
     body::Bytes,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     routing::{get, post},
-    Router,
 };
 use chrono::Utc;
 use clap::Parser;
-use orion_webhook::{verify_hmac_sha256, WebhookEvent};
-use serde_json::{json, Value};
+use orion_webhook::{WebhookEvent, verify_hmac_sha256};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::signal;
 
@@ -52,10 +52,9 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
     let token = std::env::var("ORION_CLUSTER_TOKEN").ok();
-    let subject = std::env::var("ORION_QUEUE_SUBJECT")
-        .context("ORION_QUEUE_SUBJECT must be set")?;
-    let stream = std::env::var("ORION_QUEUE_STREAM")
-        .context("ORION_QUEUE_STREAM must be set")?;
+    let subject =
+        std::env::var("ORION_QUEUE_SUBJECT").context("ORION_QUEUE_SUBJECT must be set")?;
+    let stream = std::env::var("ORION_QUEUE_STREAM").context("ORION_QUEUE_STREAM must be set")?;
     let secret = std::env::var("WEBHOOK_SECRET").ok();
 
     let nc = orion_bus::client::connect(&nats_url, token.as_deref()).await?;
@@ -67,7 +66,11 @@ async fn main() -> Result<()> {
     };
     let _ = orion_bus::client::ensure_stream(&js, cfg).await;
 
-    let state = Arc::new(AppState { subject, secret, js });
+    let state = Arc::new(AppState {
+        subject,
+        secret,
+        js,
+    });
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/hook", post(receive))

@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use orion_file_watcher::{make_event, CursorMap};
+use orion_file_watcher::{CursorMap, make_event};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
@@ -35,10 +35,10 @@ async fn main() -> Result<()> {
         .init();
 
     let mut args = Args::parse();
-    if args.paths.is_empty() {
-        if let Ok(s) = std::env::var("WATCH_PATHS") {
-            args.paths = s.split(':').map(PathBuf::from).collect();
-        }
+    if args.paths.is_empty()
+        && let Ok(s) = std::env::var("WATCH_PATHS")
+    {
+        args.paths = s.split(':').map(PathBuf::from).collect();
     }
     if args.paths.is_empty() {
         anyhow::bail!("no paths to watch — pass --path or set WATCH_PATHS");
@@ -46,10 +46,10 @@ async fn main() -> Result<()> {
 
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
     let token = std::env::var("ORION_CLUSTER_TOKEN").ok();
-    let subject = std::env::var("ORION_QUEUE_SUBJECT")
-        .context("ORION_QUEUE_SUBJECT must be set (the agent populates it from the Service spec)")?;
-    let stream = std::env::var("ORION_QUEUE_STREAM")
-        .context("ORION_QUEUE_STREAM must be set")?;
+    let subject = std::env::var("ORION_QUEUE_SUBJECT").context(
+        "ORION_QUEUE_SUBJECT must be set (the agent populates it from the Service spec)",
+    )?;
+    let stream = std::env::var("ORION_QUEUE_STREAM").context("ORION_QUEUE_STREAM must be set")?;
 
     let nc = orion_bus::client::connect(&nats_url, token.as_deref())
         .await

@@ -29,8 +29,8 @@ use orion_bus::{
 };
 use orion_store::Store;
 use orion_types::{Resource, ResourceBody, ResourceName, Runtime};
-use std::str::FromStr;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
@@ -113,15 +113,15 @@ impl LogBuffer {
         let rings = self.rings.lock().unwrap();
         let mut hits: Vec<SearchHit> = Vec::new();
         for ((kind, name), ring) in rings.iter() {
-            if let Some(k) = kind_filter {
-                if k != kind {
-                    continue;
-                }
+            if let Some(k) = kind_filter
+                && k != kind
+            {
+                continue;
             }
-            if let Some(n) = name_filter {
-                if n != name {
-                    continue;
-                }
+            if let Some(n) = name_filter
+                && n != name
+            {
+                continue;
             }
             for entry in ring.iter() {
                 if entry.line.contains(query) {
@@ -137,7 +137,7 @@ impl LogBuffer {
             }
         }
         // Newest first.
-        hits.sort_by(|a, b| b.at.cmp(&a.at));
+        hits.sort_by_key(|h| std::cmp::Reverse(h.at));
         hits.truncate(limit);
         hits
     }
@@ -303,7 +303,13 @@ impl InstanceRegistry {
     fn snapshot_all(&self) -> Vec<InstanceRecord> {
         let by_id = self.by_id.lock().unwrap();
         let mut out: Vec<_> = by_id.values().cloned().collect();
-        out.sort_by(|a, b| (a.kind.clone(), a.name.clone(), a.replica_index).cmp(&(b.kind.clone(), b.name.clone(), b.replica_index)));
+        out.sort_by(|a, b| {
+            (a.kind.clone(), a.name.clone(), a.replica_index).cmp(&(
+                b.kind.clone(),
+                b.name.clone(),
+                b.replica_index,
+            ))
+        });
         out
     }
 
@@ -341,20 +347,6 @@ impl InstanceRegistry {
         })
     }
 
-    /// Count instances for (kind, name) that haven't reported an exit yet.
-    fn count_alive(&self, kind: &str, name: &str) -> u32 {
-        let by_workload = self.by_workload.lock().unwrap();
-        let ids = by_workload
-            .get(&(kind.to_owned(), name.to_owned()))
-            .cloned()
-            .unwrap_or_default();
-        let by_id = self.by_id.lock().unwrap();
-        ids.iter()
-            .filter_map(|i| by_id.get(i))
-            .filter(|r| r.exited_at.is_none())
-            .count() as u32
-    }
-
     /// Remove an instance entirely (used after the reconciler re-dispatches
     /// a slot — we don't need to keep the dead exit record around forever).
     fn purge(&self, instance_id: Uuid) {
@@ -390,14 +382,16 @@ struct ScheduleObservation {
 impl ScheduleRegistry {
     fn observe<F: FnOnce(&mut ScheduleObservation)>(&self, name: &str, f: F) {
         let mut map = self.by_name.lock().unwrap();
-        let entry = map.entry(name.to_owned()).or_insert_with(|| ScheduleObservation {
-            armed_at: Utc::now(),
-            last_fired_at: None,
-            last_instance_id: None,
-            next_fire_at: None,
-            last_error: None,
-            fire_count: 0,
-        });
+        let entry = map
+            .entry(name.to_owned())
+            .or_insert_with(|| ScheduleObservation {
+                armed_at: Utc::now(),
+                last_fired_at: None,
+                last_instance_id: None,
+                next_fire_at: None,
+                last_error: None,
+                fire_count: 0,
+            });
         f(entry);
     }
 
@@ -441,7 +435,11 @@ async fn main() -> Result<()> {
         "orion-controller starting"
     );
 
-    let store = Arc::new(Store::open(&args.store_path).await.context("opening store")?);
+    let store = Arc::new(
+        Store::open(&args.store_path)
+            .await
+            .context("opening store")?,
+    );
     let nats = orion_auth::nats::connect_options(&auth)
         .name("orion-controller")
         .connect(&args.nats_url)
@@ -538,7 +536,10 @@ async fn main() -> Result<()> {
         .route("/v1/nodes", get(list_nodes))
         .route("/v1/kinds", get(list_kinds))
         .route("/v1/resources/:kind", get(list_resources))
-        .route("/v1/resources/:kind/:name", get(get_resource).delete(delete_resource))
+        .route(
+            "/v1/resources/:kind/:name",
+            get(get_resource).delete(delete_resource),
+        )
         .route("/v1/resources/apply", post(apply_resource))
         .route("/v1/dispatch/:kind/:name", post(dispatch_resource))
         .route("/v1/logs/:kind/:name", get(get_logs))
@@ -570,7 +571,9 @@ async fn subscribe_heartbeats(
     store: Arc<Store>,
     nodes: NodeIdRegistry,
 ) -> Result<()> {
-    let mut sub = client.subscribe(Topic::Heartbeat.as_str().to_owned()).await?;
+    let mut sub = client
+        .subscribe(Topic::Heartbeat.as_str().to_owned())
+        .await?;
     info!("subscribed to {}", Topic::Heartbeat.as_str());
     while let Some(msg) = sub.next().await {
         match serde_json::from_slice::<Envelope<Heartbeat>>(&msg.payload) {
@@ -588,7 +591,9 @@ async fn subscribe_heartbeats(
 }
 
 async fn subscribe_inventory(client: Client, store: Arc<Store>) -> Result<()> {
-    let mut sub = client.subscribe(Topic::NodeInventory.as_str().to_owned()).await?;
+    let mut sub = client
+        .subscribe(Topic::NodeInventory.as_str().to_owned())
+        .await?;
     info!("subscribed to {}", Topic::NodeInventory.as_str());
     while let Some(msg) = sub.next().await {
         match serde_json::from_slice::<Envelope<NodeInventory>>(&msg.payload) {
@@ -704,9 +709,7 @@ async fn list_nodes(State(state): State<AppState>) -> Result<Json<Vec<NodeView>>
             node_id: n.node_id,
             agent_version: n.agent_version,
             last_seen_at: n.last_seen_at.to_rfc3339(),
-            inventory: n
-                .inventory_json
-                .and_then(|s| serde_json::from_str(&s).ok()),
+            inventory: n.inventory_json.and_then(|s| serde_json::from_str(&s).ok()),
         })
         .collect();
     Ok(Json(view))
@@ -716,7 +719,11 @@ async fn list_resources(
     State(state): State<AppState>,
     Path(kind): Path<String>,
 ) -> Result<Json<Vec<Resource>>, ApiError> {
-    let rs = state.store.list_by_kind(&kind).await.map_err(ApiError::store)?;
+    let rs = state
+        .store
+        .list_by_kind(&kind)
+        .await
+        .map_err(ApiError::store)?;
     Ok(Json(rs))
 }
 
@@ -747,7 +754,11 @@ async fn delete_resource(
     if !removed {
         return Err(ApiError::not_found(format!("{kind}/{name} not found")));
     }
-    Ok(Json(DeleteOutcome { kind, name, deleted: true }))
+    Ok(Json(DeleteOutcome {
+        kind,
+        name,
+        deleted: true,
+    }))
 }
 
 #[derive(Serialize)]
@@ -758,9 +769,23 @@ struct KindsView {
 async fn list_kinds() -> Json<KindsView> {
     Json(KindsView {
         kinds: &[
-            "Node", "Service", "Task", "Job", "Schedule", "Dataset", "Model",
-            "Project", "Secret", "Volume", "Network", "Queue", "Workflow", "Runtime",
-            "Capability", "Policy", "Integration",
+            "Node",
+            "Service",
+            "Task",
+            "Job",
+            "Schedule",
+            "Dataset",
+            "Model",
+            "Project",
+            "Secret",
+            "Volume",
+            "Network",
+            "Queue",
+            "Workflow",
+            "Runtime",
+            "Capability",
+            "Policy",
+            "Integration",
         ],
     })
 }
@@ -793,7 +818,12 @@ async fn apply_resource(
     let name = r.metadata.name.0.clone();
 
     if q.is_dry_run() {
-        return Ok(Json(ApplyOutcome { kind, name, generation: 0, dry_run: true }));
+        return Ok(Json(ApplyOutcome {
+            kind,
+            name,
+            generation: 0,
+            dry_run: true,
+        }));
     }
 
     let generation = state
@@ -801,7 +831,12 @@ async fn apply_resource(
         .upsert_resource(&r)
         .await
         .map_err(ApiError::store)?;
-    Ok(Json(ApplyOutcome { kind, name, generation, dry_run: false }))
+    Ok(Json(ApplyOutcome {
+        kind,
+        name,
+        generation,
+        dry_run: false,
+    }))
 }
 
 #[derive(Serialize)]
@@ -844,7 +879,11 @@ async fn dispatch_resource(
         _ => unreachable!(),
     };
 
-    let workload_kind = if kind == "Service" { WorkloadKind::Service } else { WorkloadKind::Task };
+    let workload_kind = if kind == "Service" {
+        WorkloadKind::Service
+    } else {
+        WorkloadKind::Task
+    };
     let generation = resource.metadata.generation.unwrap_or(1);
 
     let (node, instance_id) = dispatch_workload(
@@ -861,7 +900,12 @@ async fn dispatch_resource(
         .instances
         .record_dispatch(instance_id, &kind, &name, Some(&node), replicas);
 
-    Ok(Json(DispatchOutcome { kind, name, node, instance_id }))
+    Ok(Json(DispatchOutcome {
+        kind,
+        name,
+        node,
+        instance_id,
+    }))
 }
 
 async fn get_instances(
@@ -1128,31 +1172,33 @@ async fn workflow_tick_once(state: &AppState) -> Result<()> {
 
         // Build task_states + current StepStatus map for the pure planner.
         let instances = state.instances.snapshot_all();
-        let mut task_states: std::collections::HashMap<String, decisions::TaskExitKind> = std::collections::HashMap::new();
+        let mut task_states: std::collections::HashMap<String, decisions::TaskExitKind> =
+            std::collections::HashMap::new();
         for r in &instances {
-            if r.kind == "Task" {
-                if let Some(kind) = match r.exit_kind.as_deref() {
+            if r.kind == "Task"
+                && let Some(kind) = match r.exit_kind.as_deref() {
                     Some("succeeded") => Some(decisions::TaskExitKind::Succeeded),
                     Some("failed") => Some(decisions::TaskExitKind::Failed),
                     _ => None,
-                } {
-                    task_states.insert(r.name.clone(), kind);
                 }
+            {
+                task_states.insert(r.name.clone(), kind);
             }
         }
-        let current_status: std::collections::HashMap<String, decisions::StepStatus> = progress_snapshot
-            .steps
-            .iter()
-            .map(|(k, v)| {
-                let s = match v {
-                    StepStatus::Pending => decisions::StepStatus::Pending,
-                    StepStatus::Running => decisions::StepStatus::Running,
-                    StepStatus::Succeeded => decisions::StepStatus::Succeeded,
-                    StepStatus::Failed => decisions::StepStatus::Failed,
-                };
-                (k.clone(), s)
-            })
-            .collect();
+        let current_status: std::collections::HashMap<String, decisions::StepStatus> =
+            progress_snapshot
+                .steps
+                .iter()
+                .map(|(k, v)| {
+                    let s = match v {
+                        StepStatus::Pending => decisions::StepStatus::Pending,
+                        StepStatus::Running => decisions::StepStatus::Running,
+                        StepStatus::Succeeded => decisions::StepStatus::Succeeded,
+                        StepStatus::Failed => decisions::StepStatus::Failed,
+                    };
+                    (k.clone(), s)
+                })
+                .collect();
 
         let plan = decisions::advance_workflow(decisions::WorkflowInputs {
             spec: &spec,
@@ -1205,15 +1251,8 @@ async fn workflow_tick_once(state: &AppState) -> Result<()> {
                     continue;
                 }
             };
-            match dispatch_workload(
-                state,
-                WorkloadKind::Task,
-                step.task.clone(),
-                runtime,
-                0,
-                1,
-            )
-            .await
+            match dispatch_workload(state, WorkloadKind::Task, step.task.clone(), runtime, 0, 1)
+                .await
             {
                 Ok((node, id)) => {
                     info!(
@@ -1224,8 +1263,12 @@ async fn workflow_tick_once(state: &AppState) -> Result<()> {
                         node = %node,
                         "workflow: step dispatched"
                     );
-                    state.instances.record_dispatch(id, "Task", &step.task.0, Some(&node), 1);
-                    progress.steps.insert(step.name.clone(), StepStatus::Running);
+                    state
+                        .instances
+                        .record_dispatch(id, "Task", &step.task.0, Some(&node), 1);
+                    progress
+                        .steps
+                        .insert(step.name.clone(), StepStatus::Running);
                 }
                 Err(e) => {
                     warn!(workflow = %name, step = %step.name, error = %e, "workflow dispatch failed");
@@ -1312,75 +1355,11 @@ async fn find_services(
             ResourceBody::Service { spec, .. } => spec.capabilities.clone(),
             _ => continue,
         };
-        if capabilities_match(&advertised, &selector) {
+        if decisions::capabilities_match(&advertised, &selector) {
             out.push(svc);
         }
     }
     Ok(Json(out))
-}
-
-fn capabilities_match(
-    advertised: &[orion_types::Capability],
-    selector: &orion_types::CapabilitySelector,
-) -> bool {
-    use orion_types::AttrMatch;
-    for (cap_name, checks) in &selector.requirements {
-        let cap = match advertised.iter().find(|c| &c.name == cap_name) {
-            Some(c) => c,
-            None => return false,
-        };
-        for (attr_key, attr_match) in &checks.0 {
-            let actual = match cap.attributes.get(attr_key) {
-                Some(v) => v,
-                None => return false,
-            };
-            match attr_match {
-                AttrMatch::Equals(v) => {
-                    if actual != v {
-                        return false;
-                    }
-                }
-                AttrMatch::OneOf(values) => {
-                    if !values.iter().any(|v| v == actual) {
-                        return false;
-                    }
-                }
-                AttrMatch::Op(ops) => {
-                    if !attr_op_matches(ops, actual) {
-                        return false;
-                    }
-                }
-            }
-        }
-    }
-    true
-}
-
-fn attr_op_matches(op: &orion_types::AttrOp, actual: &serde_json::Value) -> bool {
-    if let Some(v) = &op.eq {
-        if actual != v {
-            return false;
-        }
-    }
-    if let Some(v) = &op.ne {
-        if actual == v {
-            return false;
-        }
-    }
-    let actual_num = actual.as_f64();
-    let cmp = |lhs: &Option<serde_json::Number>,
-               op: fn(f64, f64) -> bool|
-     -> bool {
-        match (lhs, actual_num) {
-            (Some(n), Some(a)) => n.as_f64().map_or(true, |x| op(a, x)),
-            (Some(_), None) => false,
-            (None, _) => true,
-        }
-    };
-    cmp(&op.gt, |a, x| a > x)
-        && cmp(&op.gte, |a, x| a >= x)
-        && cmp(&op.lt, |a, x| a < x)
-        && cmp(&op.lte, |a, x| a <= x)
 }
 
 #[derive(Deserialize)]
@@ -1415,7 +1394,9 @@ async fn get_logs_archive(
 
 /// `/metrics` — Prometheus text exposition. Scrape from any Prometheus-compatible
 /// pull system (Prometheus itself, Grafana Agent, VictoriaMetrics vmagent).
-async fn list_workflow_progress(State(state): State<AppState>) -> Json<HashMap<String, WorkflowProgress>> {
+async fn list_workflow_progress(
+    State(state): State<AppState>,
+) -> Json<HashMap<String, WorkflowProgress>> {
     Json(state.workflows.snapshot())
 }
 
@@ -1438,8 +1419,14 @@ async fn prometheus_metrics(State(state): State<AppState>) -> String {
             .iter()
             .filter(|r| r.exit_kind.as_deref() == Some("failed"))
             .count(),
-        health_healthy: health_snap.values().filter(|h| h.status == "healthy").count(),
-        health_unhealthy: health_snap.values().filter(|h| h.status == "unhealthy").count(),
+        health_healthy: health_snap
+            .values()
+            .filter(|h| h.status == "healthy")
+            .count(),
+        health_unhealthy: health_snap
+            .values()
+            .filter(|h| h.status == "unhealthy")
+            .count(),
         schedule_fires_total: schedules.values().map(|o| o.fire_count).sum(),
     };
     decisions::format_prometheus(&snap)
@@ -1611,13 +1598,22 @@ async fn reconcile_once(state: &AppState) -> Result<()> {
                 .await
                 {
                     Ok((node, id)) => {
-                        state.instances.record_dispatch(id, "Service", &name, Some(&node), replicas);
+                        state.instances.record_dispatch(
+                            id,
+                            "Service",
+                            &name,
+                            Some(&node),
+                            replicas,
+                        );
                     }
                     Err(e) => warn!(workload = %name, error = %e, "reconcile dispatch failed"),
                 }
                 continue;
             }
-            decisions::ReconcileAction::DispatchPartial { slot_indices, purge } => {
+            decisions::ReconcileAction::DispatchPartial {
+                slot_indices,
+                purge,
+            } => {
                 for id in &purge {
                     state.instances.purge(*id);
                     state.health.purge(*id);
@@ -1641,14 +1637,15 @@ async fn reconcile_once(state: &AppState) -> Result<()> {
                 .await
                 {
                     Ok((node, id)) => {
-                        state.instances.record_dispatch(id, "Service", &name, Some(&node), desired);
+                        state
+                            .instances
+                            .record_dispatch(id, "Service", &name, Some(&node), desired);
                     }
                     Err(e) => warn!(workload = %name, error = %e, "partial dispatch failed"),
                 }
                 continue;
             }
         }
-
     }
     Ok(())
 }
@@ -1819,7 +1816,12 @@ async fn get_logs(
 ) -> Json<LogsView> {
     let since = q.since.unwrap_or(0);
     let (entries, total) = state.logs.snapshot(&kind, &name, since);
-    Json(LogsView { kind, name, total, entries })
+    Json(LogsView {
+        kind,
+        name,
+        total,
+        entries,
+    })
 }
 
 #[derive(Serialize)]
@@ -1858,12 +1860,11 @@ async fn search_logs(
     State(state): State<AppState>,
     Query(q): Query<LogSearchQuery>,
 ) -> Json<Vec<SearchHit>> {
-    Json(state.logs.search(
-        &q.q,
-        q.kind.as_deref(),
-        q.name.as_deref(),
-        q.limit,
-    ))
+    Json(
+        state
+            .logs
+            .search(&q.q, q.kind.as_deref(), q.name.as_deref(), q.limit),
+    )
 }
 
 async fn list_all_instances(State(state): State<AppState>) -> Json<Vec<InstanceRecord>> {
@@ -1891,7 +1892,9 @@ async fn stop_workload(
     let mut nodes: Vec<String> = Vec::new();
     let mut stopped: u32 = 0;
     for rec in &instances {
-        let Some(node) = rec.node.clone() else { continue };
+        let Some(node) = rec.node.clone() else {
+            continue;
+        };
         let envelope = Envelope::new(
             None,
             ControlStop {
@@ -1934,18 +1937,11 @@ async fn restart_workload(
     let stop_outcome = stop_workload(State(state.clone()), Path((kind.clone(), name.clone())))
         .await
         .ok();
-    let stopped = stop_outcome
-        .as_ref()
-        .map(|o| o.0.stopped)
-        .unwrap_or(0);
+    let stopped = stop_outcome.as_ref().map(|o| o.0.stopped).unwrap_or(0);
     // Brief pause so the agent can reap the children before we re-dispatch.
     tokio::time::sleep(Duration::from_millis(300)).await;
     // Re-dispatch via the existing route handler — share the same path.
-    let outcome = dispatch_resource(
-        State(state),
-        Path((kind.clone(), name.clone())),
-    )
-    .await?;
+    let outcome = dispatch_resource(State(state), Path((kind.clone(), name.clone()))).await?;
     Ok(Json(RestartOutcome {
         kind,
         name,
@@ -2040,9 +2036,13 @@ async fn diag_system(State(state): State<AppState>) -> Result<Json<DiagSystem>, 
     }
     let mut by_workload: Vec<_> = by_key
         .into_iter()
-        .map(|((k, n), c)| WorkloadInstanceCount { kind: k, name: n, instance_count: c })
+        .map(|((k, n), c)| WorkloadInstanceCount {
+            kind: k,
+            name: n,
+            instance_count: c,
+        })
         .collect();
-    by_workload.sort_by(|a, b| (a.kind.clone(), a.name.clone()).cmp(&(b.kind.clone(), b.name.clone())));
+    by_workload.sort_by_key(|a| (a.kind.clone(), a.name.clone()));
 
     let sched_snap = state.schedules.snapshot();
     let schedules = ScheduleStats {
@@ -2151,9 +2151,7 @@ struct JsConsumer {
     last_ack_floor: u64,
 }
 
-async fn diag_jetstream(
-    State(state): State<AppState>,
-) -> Result<Json<DiagJetStream>, ApiError> {
+async fn diag_jetstream(State(state): State<AppState>) -> Result<Json<DiagJetStream>, ApiError> {
     let Some(monitoring_url) = derive_nats_monitoring_url(&state.nats_url) else {
         return Ok(Json(DiagJetStream {
             monitoring_url: None,
@@ -2192,16 +2190,33 @@ async fn diag_jetstream(
             for s in &stream_detail {
                 let config = s.get("config").cloned().unwrap_or(serde_json::Value::Null);
                 let state_obj = s.get("state").cloned().unwrap_or(serde_json::Value::Null);
-                let name = config.get("name").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                let name = config
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned();
                 let subjects = config
                     .get("subjects")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|s| s.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                let messages = state_obj.get("messages").and_then(|v| v.as_u64()).unwrap_or(0);
+                let messages = state_obj
+                    .get("messages")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 let bytes = state_obj.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
-                let first_seq = state_obj.get("first_seq").and_then(|v| v.as_u64()).unwrap_or(0);
-                let last_seq = state_obj.get("last_seq").and_then(|v| v.as_u64()).unwrap_or(0);
+                let first_seq = state_obj
+                    .get("first_seq")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let last_seq = state_obj
+                    .get("last_seq")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 let cons_arr = s
                     .get("consumer_detail")
                     .and_then(|v| v.as_array())
@@ -2218,9 +2233,16 @@ async fn diag_jetstream(
                     consumer_count,
                 });
                 for c in &cons_arr {
-                    let cname = c.get("name").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                    let cname = c
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_owned();
                     let num_pending = c.get("num_pending").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let num_ack_pending = c.get("num_ack_pending").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let num_ack_pending = c
+                        .get("num_ack_pending")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                     let delivered = c
                         .get("delivered")
                         .and_then(|v| v.get("consumer_seq"))
@@ -2269,16 +2291,28 @@ impl std::fmt::Display for ApiError {
 
 impl ApiError {
     fn bad_request(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, message: msg.into() }
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: msg.into(),
+        }
     }
     fn not_found(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::NOT_FOUND, message: msg.into() }
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: msg.into(),
+        }
     }
     fn internal(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: msg.into() }
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: msg.into(),
+        }
     }
     fn store(e: orion_store::StoreError) -> Self {
-        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: e.to_string() }
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: e.to_string(),
+        }
     }
 }
 

@@ -55,8 +55,5 @@ fn render_table(v: &Value) {
                 .unwrap_or_else(|| "?".into()),
         ]);
     }
-    output::render_table(
-        &["kind", "name", "replica", "node", "started", "id"],
-        &rows,
-    );
+    output::render_table(&["kind", "name", "replica", "node", "started", "id"], &rows);
 }
