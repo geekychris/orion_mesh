@@ -12,7 +12,7 @@ Decisions are durable — when adding code, conform to these rather than re-liti
 
 ### Language and layout
 
-1. **All Rust, edition 2024** — `orion-agent`, `orion-controller`, `orion-cli`, `orion-ui` plus the libraries below. Single Cargo workspace. `tokio` + `async-nats` + `axum` + `serde_yml` + `clap` + `sqlx` (SQLite) + `redb` available but not currently used.
+1. **All Rust, edition 2024** — `orion-agent`, `orion-controller`, `orion-cli`, `orion-ui` plus the libraries below. Single Cargo workspace. `tokio` + `async-nats` + `axum` + `serde_yaml_ng` + `clap` + `sqlx` (SQLite) + `redb` available but not currently used.
 2. **Crate split**: `orion-types` (resource model), `orion-bus` (NATS contract), `orion-auth` (token + middleware), `orion-runtime` (RuntimeAdapter + SecretResolver), `orion-store` (SQLite via sqlx), `orion-scheduler` (placement filter, scoring later), `orion-devportal` (Dev Portal HTTP client), `orion-mcp` (stub for the upcoming OrionMesh MCP server), `orion-agent`, `orion-controller`, `orion-cli`, `orion-ui`. Matches plan section 20.
 
 ### Wire format and persistence

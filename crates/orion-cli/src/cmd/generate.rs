@@ -8,7 +8,7 @@ use crate::{Ctx, http};
 use anyhow::Result;
 use clap::{Args as ClapArgs, Subcommand};
 use serde::Serialize;
-use serde_yml::Value as Y;
+use serde_yaml_ng::Value as Y;
 
 #[derive(Subcommand, Debug)]
 pub enum Sub {
@@ -95,7 +95,7 @@ pub struct QueueArgs {
 }
 
 fn build_queue(a: QueueArgs) -> Result<String> {
-    let mut spec = serde_yml::Mapping::new();
+    let mut spec = serde_yaml_ng::Mapping::new();
     spec.insert(Y::from("type"), Y::from(a.r#type.as_str()));
     if let Some(s) = parse_duration_seconds(a.max_age.as_deref())? {
         spec.insert(Y::from("max_age_seconds"), Y::from(s));
@@ -196,7 +196,7 @@ fn build_task(a: TaskArgs) -> Result<String> {
         &a.args,
         &a.env,
     )?;
-    let mut spec = serde_yml::Mapping::new();
+    let mut spec = serde_yaml_ng::Mapping::new();
     spec.insert(Y::from("runtime"), runtime);
     if let Some(t) = a.timeout_seconds {
         spec.insert(Y::from("timeout_seconds"), Y::from(t));
@@ -218,7 +218,7 @@ pub struct ScheduleArgs {
 }
 
 fn build_schedule(a: ScheduleArgs) -> Result<String> {
-    let mut spec = serde_yml::Mapping::new();
+    let mut spec = serde_yaml_ng::Mapping::new();
     spec.insert(Y::from("cron"), Y::from(a.cron));
     spec.insert(Y::from("task"), Y::from(a.task));
     emit("Schedule", &a.name, None, Y::from(spec))
@@ -354,7 +354,7 @@ async fn build_processor(ctx: &Ctx, a: ProcessorArgs) -> Result<String> {
         let _ = &mut args_v;
     }
 
-    let mut env_map = serde_yml::Mapping::new();
+    let mut env_map = serde_yaml_ng::Mapping::new();
     env_map.insert(
         Y::from("NATS_URL"),
         Y::from(std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_owned())),
@@ -379,7 +379,7 @@ async fn build_processor(ctx: &Ctx, a: ProcessorArgs) -> Result<String> {
         }
     }
 
-    let mut runtime = serde_yml::Mapping::new();
+    let mut runtime = serde_yaml_ng::Mapping::new();
     runtime.insert(Y::from("kind"), Y::from("native"));
     runtime.insert(Y::from("exec"), Y::from(exec));
     runtime.insert(
@@ -388,7 +388,7 @@ async fn build_processor(ctx: &Ctx, a: ProcessorArgs) -> Result<String> {
     );
     runtime.insert(Y::from("env"), Y::from(env_map));
 
-    let mut spec = serde_yml::Mapping::new();
+    let mut spec = serde_yaml_ng::Mapping::new();
     spec.insert(Y::from("runtime"), Y::from(runtime));
     if a.replicas > 1 {
         spec.insert(Y::from("replicas"), Y::from(a.replicas));
@@ -398,7 +398,7 @@ async fn build_processor(ctx: &Ctx, a: ProcessorArgs) -> Result<String> {
     if a.debug {
         // Publish the debug port via ports[] so it surfaces in `orion describe` /
         // `orion instances` for attach instructions.
-        let mut p = serde_yml::Mapping::new();
+        let mut p = serde_yaml_ng::Mapping::new();
         p.insert(
             Y::from("name"),
             Y::from(if a.lang == "java" { "jdwp" } else { "debugpy" }),
@@ -411,7 +411,7 @@ async fn build_processor(ctx: &Ctx, a: ProcessorArgs) -> Result<String> {
     emit(
         "Service",
         &a.name,
-        Some(serde_yml::Mapping::from_iter([
+        Some(serde_yaml_ng::Mapping::from_iter([
             (Y::from("role"), Y::from("processor")),
             (Y::from("queue"), Y::from(a.queue.clone())),
             (Y::from("lang"), Y::from(a.lang.clone())),
@@ -433,7 +433,7 @@ fn build_workload_spec(
     restart: Option<&str>,
 ) -> Result<Y> {
     let runtime = build_runtime_block(runtime, exec, image, args, env)?;
-    let mut spec = serde_yml::Mapping::new();
+    let mut spec = serde_yaml_ng::Mapping::new();
     spec.insert(Y::from("runtime"), runtime);
     if let Some(r) = replicas {
         spec.insert(Y::from("replicas"), Y::from(r));
@@ -444,7 +444,7 @@ fn build_workload_spec(
             let (name, port) = p.split_once(':').ok_or_else(|| {
                 anyhow::anyhow!("--port must look like NAME:PORT, got {p:?}")
             })?;
-            let mut m = serde_yml::Mapping::new();
+            let mut m = serde_yaml_ng::Mapping::new();
             m.insert(Y::from("name"), Y::from(name));
             m.insert(Y::from("port"), Y::from(port.parse::<u16>()?));
             m.insert(Y::from("protocol"), Y::from("tcp"));
@@ -466,7 +466,7 @@ fn build_runtime_block(
     args: &[String],
     env: &[String],
 ) -> Result<Y> {
-    let mut m = serde_yml::Mapping::new();
+    let mut m = serde_yaml_ng::Mapping::new();
     m.insert(Y::from("kind"), Y::from(runtime));
     match runtime {
         "native" => {
@@ -490,7 +490,7 @@ fn build_runtime_block(
         );
     }
     if !env.is_empty() {
-        let mut em = serde_yml::Mapping::new();
+        let mut em = serde_yaml_ng::Mapping::new();
         for kv in env {
             let (k, v) = kv.split_once('=').ok_or_else(|| {
                 anyhow::anyhow!("--env must look like K=V, got {kv:?}")
@@ -502,8 +502,8 @@ fn build_runtime_block(
     Ok(Y::from(m))
 }
 
-fn parse_kv(kvs: &[String]) -> Result<serde_yml::Mapping> {
-    let mut m = serde_yml::Mapping::new();
+fn parse_kv(kvs: &[String]) -> Result<serde_yaml_ng::Mapping> {
+    let mut m = serde_yaml_ng::Mapping::new();
     for kv in kvs {
         let (k, v) = kv
             .split_once('=')
@@ -541,22 +541,22 @@ fn parse_duration_seconds(s: Option<&str>) -> Result<Option<u64>> {
 fn emit(
     kind: &str,
     name: &str,
-    labels: Option<serde_yml::Mapping>,
+    labels: Option<serde_yaml_ng::Mapping>,
     spec: Y,
 ) -> Result<String> {
-    let mut metadata = serde_yml::Mapping::new();
+    let mut metadata = serde_yaml_ng::Mapping::new();
     metadata.insert(Y::from("name"), Y::from(name));
     if let Some(l) = labels {
         if !l.is_empty() {
             metadata.insert(Y::from("labels"), Y::from(l));
         }
     }
-    let mut top = serde_yml::Mapping::new();
+    let mut top = serde_yaml_ng::Mapping::new();
     top.insert(Y::from("apiVersion"), Y::from("orionmesh.dev/v1"));
     top.insert(Y::from("kind"), Y::from(kind));
     top.insert(Y::from("metadata"), Y::from(metadata));
     top.insert(Y::from("spec"), spec);
-    Ok(serde_yml::to_string(&Y::from(top))?)
+    Ok(serde_yaml_ng::to_string(&Y::from(top))?)
 }
 
 // pacify the unused-import lint when this module compiles standalone.
@@ -595,7 +595,7 @@ fn build_sidecar(a: SidecarArgs) -> Result<String> {
     let queue_subject = orion_types::default_queue_subject(&a.queue);
     let queue_stream = orion_types::default_queue_stream(&a.queue);
     let interval_str = a.interval_seconds.to_string();
-    let mut env_map = serde_yml::Mapping::new();
+    let mut env_map = serde_yaml_ng::Mapping::new();
     env_map.insert(Y::from("NATS_URL"), Y::from("nats://127.0.0.1:4222"));
     env_map.insert(Y::from("ORION_CONTROLLER_URL"), Y::from(controller));
     env_map.insert(Y::from("SIDECAR_SOURCE_SERVICE"), Y::from(a.source.clone()));
@@ -606,20 +606,20 @@ fn build_sidecar(a: SidecarArgs) -> Result<String> {
     if let Some(f) = &a.filter {
         env_map.insert(Y::from("SIDECAR_FILTER_REGEX"), Y::from(f.as_str()));
     }
-    let mut runtime = serde_yml::Mapping::new();
+    let mut runtime = serde_yaml_ng::Mapping::new();
     runtime.insert(Y::from("kind"), Y::from("native"));
     runtime.insert(Y::from("exec"), Y::from("target/debug/orion-sidecar"));
     runtime.insert(Y::from("args"), Y::from(Vec::<Y>::new()));
     runtime.insert(Y::from("env"), Y::from(env_map));
 
-    let mut spec = serde_yml::Mapping::new();
+    let mut spec = serde_yaml_ng::Mapping::new();
     spec.insert(Y::from("runtime"), Y::from(runtime));
     spec.insert(Y::from("restart_policy"), Y::from("on_failure"));
 
     emit(
         "Service",
         &a.name,
-        Some(serde_yml::Mapping::from_iter([
+        Some(serde_yaml_ng::Mapping::from_iter([
             (Y::from("role"), Y::from("sidecar")),
             (Y::from("source"), Y::from(a.source)),
             (Y::from("queue"), Y::from(a.queue)),

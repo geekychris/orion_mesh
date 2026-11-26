@@ -501,10 +501,10 @@ llm:
   gpu:
     min_vram_gb: { gte: 24 }     # Op
 "#;
-    let sel: CapabilitySelector = serde_yml::from_str(&format!("requirements:\n  {yaml}"))
+    let sel: CapabilitySelector = serde_yaml_ng::from_str(&format!("requirements:\n  {yaml}"))
         .or_else(|_| {
             // The transparent wrapper means the YAML *is* the inner map.
-            serde_yml::from_str(yaml)
+            serde_yaml_ng::from_str(yaml)
         })
         .unwrap();
     let search = sel.requirements.get("search").unwrap();

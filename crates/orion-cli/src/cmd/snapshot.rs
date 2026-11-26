@@ -29,7 +29,7 @@ pub fn emit_multi_doc(values: &[Value]) -> Result<String> {
         if let Some(obj) = clean.as_object_mut() {
             obj.remove("status");
         }
-        let yaml = serde_yml::to_string(&clean).context("encoding resource")?;
+        let yaml = serde_yaml_ng::to_string(&clean).context("encoding resource")?;
         out.push_str("---\n");
         out.push_str(&yaml);
     }
@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(docs.len(), 3);
         // Each doc is parseable YAML.
         for d in &docs {
-            let _: serde_yml::Value = serde_yml::from_str(d).unwrap_or_else(|e| panic!("doc not valid yaml: {e}\n{d}"));
+            let _: serde_yaml_ng::Value = serde_yaml_ng::from_str(d).unwrap_or_else(|e| panic!("doc not valid yaml: {e}\n{d}"));
         }
     }
 

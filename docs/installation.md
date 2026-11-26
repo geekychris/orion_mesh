@@ -8,7 +8,7 @@ This document covers building OrionMesh from source, configuring auth, and runni
 
 | Component | Version | Notes |
 |---|---|---|
-| Rust toolchain | 1.87 or newer | Edition 2024. `rustup default stable` is enough. |
+| Rust toolchain | 1.94 or newer | Edition 2024. `rustup default stable` is enough. |
 | NATS broker | 2.10+ with JetStream | Either the `nats:2.10` Docker image or a native install via `brew install nats-server`. JetStream must be enabled. |
 | Docker (optional) | any recent | Convenient way to run NATS for dev; also needed once the Docker runtime adapter ships. |
 | SQLite | bundled | `sqlx` ships its own SQLite — no system package required. |

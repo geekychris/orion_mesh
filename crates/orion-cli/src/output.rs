@@ -21,14 +21,14 @@ pub fn render<T: Serialize>(fmt: Format, value: &T) -> Result<()> {
     match fmt {
         Format::Json => println!("{}", serde_json::to_string_pretty(value)?),
         Format::Yaml | Format::Table | Format::Wide => {
-            println!("{}", serde_yml::to_string(value)?)
+            println!("{}", serde_yaml_ng::to_string(value)?)
         }
     }
     Ok(())
 }
 
 pub fn print_yaml<T: Serialize>(value: &T) -> Result<()> {
-    println!("{}", serde_yml::to_string(value)?);
+    println!("{}", serde_yaml_ng::to_string(value)?);
     Ok(())
 }
 
