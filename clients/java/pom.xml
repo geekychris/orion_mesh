@@ -17,6 +17,17 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
 
+  <!-- jnats brings Bouncy Castle 2.73.7 (GHSA-9pwp-9qqc-pr26, GHSA-qp49-qgx5-5m26, GHSA-mx76-r943-rf8g). -->
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.bouncycastle</groupId>
+        <artifactId>bcprov-lts8on</artifactId>
+        <version>2.73.13</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
   <dependencies>
     <dependency>
       <groupId>io.nats</groupId>
